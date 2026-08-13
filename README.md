@@ -69,9 +69,13 @@ The composer includes three approval modes:
 
 This does not require `mcp_enabled`, an Unsloth preset, or an endpoint that implements OpenAI's remote-MCP extension. The selected model endpoint must support standard function calling. Text-only OpenAI-compatible endpoints cannot use MCP.
 
+Enabling Notion MCP makes the workspace tools available when a request needs them; it does not force tool use on every message. BYON first performs a structured semantic decision. General conversation, writing, coding, brainstorming, and arbitrary text go through the ordinary provider path without Notion instructions or tools.
+
 For local llama.cpp-compatible endpoints, BYON automatically simplifies full MCP JSON Schemas to the conservative subset accepted by tool-call grammar compilers and sends only the tools relevant to the current request. If the endpoint still reports a grammar-compilation error, BYON retries once using a minimal JSON-string argument envelope and unwraps it before calling MCP. Notion MCP still validates the actual arguments, so simplifying the model-facing schema does not bypass Notion's validation or BYON's configured approval policy.
 
-If a model returns ordinary assistant text instead of the required structured completion, BYON redirects it back into the tool loop with function calling required. This is language-independent and bounds corrective attempts.
+If a model returns ordinary assistant text instead of the required structured completion, BYON redirects it back into the tool loop with function calling required. This is language-independent. BYON does not cap the number of productive Notion tool rounds: the loop continues until a verified answer, a user stop, or three consecutive identical no-progress attempts.
+
+Successful Notion tool results are associated with the final answer automatically. Models may cite individual call IDs, but BYON does not reject a completed action merely because the model omitted those internal IDs.
 
 The advanced connection section accepts OAuth, bearer-token, or unauthenticated Streamable HTTP servers. This is useful for authenticated MCP gateways and local bridges. A userscript cannot launch a process or access stdin/stdout, so native stdio transport is not possible. To use a stdio MCP server, run a trusted stdio-to-Streamable-HTTP bridge locally and enter its HTTP URL.
 
@@ -104,7 +108,7 @@ npm test
 npm run smoke:browser
 ```
 
-The files in `resources/` are saved Notion UI references and are not loaded by the userscript.
+The files in `references/` are organized Notion UI and DOM references and are not loaded by the userscript. See `references/README.md` for the catalog.
 
 ## Deferred from v1
 

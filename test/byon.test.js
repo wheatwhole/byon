@@ -31,8 +31,8 @@ test('UI inherits Notion theme tokens instead of the operating-system theme', ()
   assert.match(source, /\.notion-app-inner\.notion-dark-theme/);
   assert.doesNotMatch(source, /prefers-color-scheme/);
   assert.equal(Core.defaultState().settings.panelWidth, 464);
-  assert.match(source, /isolateByonInputFromNotion/);
-  assert.match(source, /'paste', 'copy', 'cut'/);
+  assert.match(source, /function installInputIsolation/);
+  assert.match(source, /event\.stopPropagation\(\)/);
 });
 
 test('tool approvals use inline Notion-style controls and expose three composer modes', () => {
@@ -56,24 +56,25 @@ test('full-page mode is restricted to Notion /ai and navigates there when reques
 });
 
 test('all saved references contain the AI chat surface and new visual references are present', () => {
-  for (const name of ['AIChatSample1.html', 'AIChatSample2.html']) {
-    const html = fs.readFileSync(path.join(__dirname, '..', 'resources', name), 'utf8');
+  const references = path.join(__dirname, '..', 'references');
+  for (const name of ['notion-ai-chat-empty.html', 'notion-ai-chat-on-page.html']) {
+    const html = fs.readFileSync(path.join(references, 'side-panel', name), 'utf8');
     assert.match(html, /placeholder="Do anything with AI…"/);
     assert.match(html, /data-testid="unified-chat-model-button"/);
   }
   assert.equal(Core.isNotionAiTriggerLabel('Ask AI', true), true);
   assert.equal(Core.isNotionAiTriggerLabel('AI Meeting Notes', true), false);
-  for (const name of ['ChatSelect.html', 'OrganizedModelSelect.html', 'AIFileAndPagePlusButtonSelect.html']) {
-    assert.equal(fs.existsSync(path.join(__dirname, '..', 'resources', name)), true);
+  for (const name of ['chat-history-menu.html', 'model-menu.html', 'attachment-menu.html']) {
+    assert.equal(fs.existsSync(path.join(references, 'side-panel', name)), true);
   }
-  for (const name of ['ChatSelect.jpg', 'PlusButtonFileAndPageSelect.jpg', 'modelselect.jpg', 'MODEselectChatCompletionsOrResponses.jpg']) {
-    assert.equal(fs.existsSync(path.join(__dirname, '..', 'resources', name)), true);
+  for (const name of ['chat-history-menu.jpg', 'attachment-menu.jpg', 'model-menu.jpg', 'api-mode-menu.jpg']) {
+    assert.equal(fs.existsSync(path.join(references, 'screenshots', name)), true);
   }
-  for (const name of ['chat.html', 'modelselectcomp.html', 'MODEselectcomp.html']) {
-    assert.equal(fs.existsSync(path.join(__dirname, '..', 'componentsExamples', name)), true);
+  for (const name of ['chat-panel.html', 'model-selector.html', 'api-mode-selector.html']) {
+    assert.equal(fs.existsSync(path.join(references, 'components', name)), true);
   }
-  for (const name of ['fullPageStartAChat.html', 'fullPageChatting.html']) {
-    const html = fs.readFileSync(path.join(__dirname, '..', name), 'utf8');
+  for (const name of ['notion-ai-start-screen.html', 'notion-ai-active-chat.html']) {
+    const html = fs.readFileSync(path.join(references, 'full-page', name), 'utf8');
     assert.match(html, /data-testid="unified-chat-model-button"/);
     assert.match(html, /Do anything with AI…/);
   }
@@ -190,6 +191,16 @@ test('MCP tool routing accepts exact model-selected names and has a conservative
   assert.deepEqual(Core.fallbackMcpTools(tools, 3).map((tool) => tool.name), ['notion-search', 'notion-fetch', 'notion-create-pages']);
   assert.equal(Core.toolRouterFunctionDefinition('chat_completions').function.name, 'byon_select_tools');
   assert.equal(Core.toolRouterFunctionDefinition('responses').name, 'byon_select_tools');
+  assert.deepEqual(Core.toolRouterFunctionDefinition('chat_completions').function.parameters.required, ['use_notion', 'tool_names']);
+});
+
+test('ordinary provider requests can omit Notion instructions when MCP is merely available', () => {
+  const p = profile({ systemPrompt: 'Be brief.', mcpEnabled: true });
+  const ordinary = Core.buildChatCompletionsBody(p, [{ role: 'user', content: 'Write five paragraphs.' }], {}, { includeMcpInstruction: false });
+  assert.match(ordinary.messages[0].content, /Be brief/);
+  assert.doesNotMatch(ordinary.messages[0].content, /Notion MCP/);
+  const responses = Core.buildResponsesBody({ ...p, apiType: 'responses' }, [{ role: 'user', content: 'asdf' }], {}, { includeMcpInstruction: false });
+  assert.doesNotMatch(responses.instructions, /Notion MCP/);
 });
 
 test('MCP tool grammar fallback uses a universal string envelope and unwraps it', () => {
@@ -205,6 +216,22 @@ test('ordinary assistant text is redirected into the language-independent comple
   assert.match(instruction, /byon_complete_task/);
   assert.match(instruction, /another Notion tool/);
   assert.match(instruction, /Draft answer in any language/);
+});
+
+test('MCP work has no total round cap and stops only repeated identical no-progress attempts', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
+  assert.doesNotMatch(source, /MAX_MCP_TOOL_ROUNDS|after .*Notion tool rounds/);
+  assert.match(source, /while \(!finalText\)/);
+
+  const progress = { signature: '', count: 0 };
+  assert.doesNotThrow(() => Core.throwIfToolCallMadeNoProgress(progress, 'notion-fetch', { id: 'a' }, '{"page":"A"}'));
+  assert.doesNotThrow(() => Core.throwIfToolCallMadeNoProgress(progress, 'notion-fetch', { id: 'b' }, '{"page":"B"}'));
+  assert.equal(progress.count, 1);
+
+  const stuck = { signature: '', count: 0 };
+  assert.doesNotThrow(() => Core.throwIfToolCallMadeNoProgress(stuck, 'notion-fetch', { id: 'a' }, '{"page":"A"}'));
+  assert.doesNotThrow(() => Core.throwIfToolCallMadeNoProgress(stuck, 'notion-fetch', { id: 'a' }, '{"page":"A"}'));
+  assert.throws(() => Core.throwIfToolCallMadeNoProgress(stuck, 'notion-fetch', { id: 'a' }, '{"page":"A"}'), /identical arguments and an identical result 3 times/);
 });
 
 test('provider bodies can require a function call for a corrective continuation', () => {
@@ -225,7 +252,7 @@ test('tool call payloads are extracted for both OpenAI-compatible formats', () =
 test('MCP completion is an explicit function for both provider wire formats', () => {
   const chat = Core.completionFunctionDefinition('chat_completions');
   assert.equal(chat.function.name, 'byon_complete_task');
-  assert.deepEqual(chat.function.parameters.required, ['answer', 'evidence_call_ids']);
+  assert.deepEqual(chat.function.parameters.required, ['answer']);
   assert.equal(chat.function.parameters.properties.evidence_call_ids.type, 'string');
   const responses = Core.completionFunctionDefinition('responses');
   assert.equal(responses.name, 'byon_complete_task');
@@ -242,7 +269,17 @@ test('MCP completion validates cited evidence structurally in any answer languag
   assert.equal(Core.validateMcpCompletion({ answer: 'Any conclusion in any language.', evidence_call_ids: 'call_empty' }, activities).ok, false);
   assert.equal(Core.validateMcpCompletion({ answer: 'Any conclusion in any language.', evidence_call_ids: 'call_fetch,call_empty' }, activities).ok, false);
   assert.equal(Core.validateMcpCompletion({ answer: 'Reading is scheduled today.', evidence_call_ids: 'call_confirm' }, activities).ok, true);
-  assert.equal(Core.validateMcpCompletion({ answer: 'Reading is scheduled today.', evidence_call_ids: 'missing' }, activities).ok, false);
+  assert.equal(Core.validateMcpCompletion({ answer: 'Reading is scheduled today.', evidence_call_ids: 'missing' }, activities).ok, true);
+});
+
+test('MCP completion automatically uses successful tool evidence when the model omits call IDs', () => {
+  const activities = [
+    { callId: 'call_search', toolName: 'notion-search', arguments: { query: 'page' }, status: 'completed', resultExcerpt: '{"results":[],"has_more":true,"next_cursor":"next"}' },
+    { callId: 'call_update', toolName: 'notion-update-page', arguments: { page_id: 'page', properties: { Status: 'Done' } }, status: 'completed', resultExcerpt: '{"updated":true,"status":"Done"}' }
+  ];
+  const validation = Core.validateMcpCompletion({ answer: 'The page status is now Done.' }, activities);
+  assert.equal(validation.ok, true);
+  assert.deepEqual(validation.evidenceCallIds, ['call_update']);
 });
 
 test('semantic reviewer prompt checks evidence rather than matching answer phrases', () => {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BYON - Bring Your Own Notion AI
 // @namespace    https://github.com/ciabidev/byon
-// @version      0.5.1
+// @version      0.5.5
 // @description  Use your own OpenAI-compatible AI backend from a native-styled Notion chat panel.
 // @author       wheatwhole
 // @license      MIT
@@ -20,7 +20,7 @@
 (function byonUserscript(global) {
   'use strict';
 
-  const VERSION = '0.5.1';
+  const VERSION = '0.5.5';
   const STORAGE_KEY = 'byon-state-v1';
   const FULL_PAGE_ROUTE_INTENT_KEY = 'byon-open-full-page-after-navigation';
   const PANEL_MIN_WIDTH = 320;
@@ -31,10 +31,9 @@
   const MAX_TOTAL_ATTACHMENT_CHARS = 100000;
   const DEFAULT_MCP_URL = 'https://mcp.notion.com/mcp';
   const MCP_PROTOCOL_VERSION = '2025-06-18';
-  const MAX_MCP_TOOL_ROUNDS = 12;
   const MAX_MCP_RESULT_CHARS = 100000;
   const MAX_MODEL_MCP_TOOLS = 5;
-  const MAX_COMPLETION_CORRECTIONS = 3;
+  const MAX_IDENTICAL_NO_PROGRESS_ATTEMPTS = 3;
   const FINALIZE_TOOL_NAME = 'byon_complete_task';
   const REVIEW_TOOL_NAME = 'byon_review_task';
   const ROUTE_TOOL_NAME = 'byon_select_tools';
@@ -163,8 +162,8 @@
     return [profile?.apiKey, notionMcp?.accessToken, notionMcp?.refreshToken, notionMcp?.clientSecret, ...headers];
   }
 
-  function profileSystemPrompt(profile) {
-    return [profile.systemPrompt && profile.systemPrompt.trim(), profile.mcpEnabled && NOTION_INSTRUCTION]
+  function profileSystemPrompt(profile, includeMcpInstruction = profile.mcpEnabled) {
+    return [profile.systemPrompt && profile.systemPrompt.trim(), includeMcpInstruction && profile.mcpEnabled && NOTION_INSTRUCTION]
       .filter(Boolean)
       .join('\n\n');
   }
@@ -267,7 +266,7 @@
   }
 
   function buildChatCompletionsBody(profile, messages, context, options = {}) {
-    const system = profileSystemPrompt(profile);
+    const system = profileSystemPrompt(profile, options.includeMcpInstruction !== false);
     const wireMessages = [];
     if (system) wireMessages.push({ role: 'system', content: system });
     let lastUserIndex = -1;
@@ -401,12 +400,13 @@
     const parameters = {
       type: 'object',
       properties: {
+        use_notion: { type: 'boolean', description: 'True only when completing the request requires reading, searching, creating, or changing data in the user\'s Notion workspace.' },
         tool_names: { type: 'string', description: `Comma-separated exact tool names, at most ${MAX_MODEL_MCP_TOOLS}.` }
       },
-      required: ['tool_names'],
+      required: ['use_notion', 'tool_names'],
       additionalProperties: false
     };
-    const description = 'Select the smallest set of MCP tools that can fully complete the request, including prerequisite discovery/read tools and the final action tool.';
+    const description = 'Decide whether the request actually requires the user\'s Notion workspace. If it does, select the smallest useful MCP tool set; otherwise select no tools.';
     return apiType === 'responses'
       ? { type: 'function', name: ROUTE_TOOL_NAME, description, parameters }
       : { type: 'function', function: { name: ROUTE_TOOL_NAME, description, parameters } };
@@ -448,14 +448,14 @@
   }
 
   function completionFunctionDefinition(apiType) {
-    const description = 'Submit the complete final answer only after the task is finished. Cite every Notion MCP result used by its exact call ID. If no Notion data or action was needed, evidence_call_ids may be empty.';
+    const description = 'Submit the complete final answer only after the task is finished. BYON automatically associates successful Notion tool results; evidence_call_ids may optionally identify the most relevant calls.';
     const parameters = {
       type: 'object',
       properties: {
         answer: { type: 'string', description: 'The complete user-facing final answer.' },
-        evidence_call_ids: { type: 'string', description: 'Comma-separated exact call IDs of Notion MCP results supporting the answer. Use an empty string only when no Notion result was needed.' }
+        evidence_call_ids: { type: 'string', description: 'Optional comma-separated call IDs for the most relevant Notion results. BYON falls back to all successful calls.' }
       },
-      required: ['answer', 'evidence_call_ids'],
+      required: ['answer'],
       additionalProperties: false
     };
     return apiType === 'responses'
@@ -511,6 +511,34 @@
     ].join('\n\n');
   }
 
+  function noteRepeatedAttempt(tracker, signature) {
+    const value = String(signature || '');
+    if (tracker.signature === value) tracker.count += 1;
+    else {
+      tracker.signature = value;
+      tracker.count = 1;
+    }
+    return tracker.count;
+  }
+
+  function clearRepeatedAttempt(tracker) {
+    tracker.signature = '';
+    tracker.count = 0;
+  }
+
+  function throwIfToolCallMadeNoProgress(tracker, toolName, argumentsObject, output) {
+    const signature = `${toolName}\n${JSON.stringify(argumentsObject || {})}\n${String(output || '')}`;
+    if (noteRepeatedAttempt(tracker, signature) >= MAX_IDENTICAL_NO_PROGRESS_ATTEMPTS) {
+      throw new Error(`Stopped because the model repeated ${toolName} with identical arguments and an identical result ${MAX_IDENTICAL_NO_PROGRESS_ATTEMPTS} times. Change the request or try a different model.`);
+    }
+  }
+
+  function throwIfCompletionMadeNoProgress(tracker, signature) {
+    if (noteRepeatedAttempt(tracker, signature) >= MAX_IDENTICAL_NO_PROGRESS_ATTEMPTS) {
+      throw new Error(`Stopped because the model repeated the same invalid completion attempt ${MAX_IDENTICAL_NO_PROGRESS_ATTEMPTS} times without making progress. Try a model with more reliable function calling.`);
+    }
+  }
+
   function walkStructuredResult(value, visit, depth = 0) {
     if (depth > 12 || value == null) return false;
     if (visit(value)) return true;
@@ -558,14 +586,14 @@
   function validateMcpCompletion(argumentsObject, toolActivities) {
     const answer = String(argumentsObject?.answer || '').trim();
     const rawIds = argumentsObject?.evidence_call_ids;
-    const ids = [...new Set((Array.isArray(rawIds) ? rawIds : String(rawIds || '').split(','))
+    const requestedIds = [...new Set((Array.isArray(rawIds) ? rawIds : String(rawIds || '').split(','))
       .map((id) => String(id).trim()).filter(Boolean))];
     if (!answer) return { ok: false, error: 'The final answer is empty.' };
     const completed = (toolActivities || []).filter((activity) => activity.status === 'completed' && activity.callId);
-    const evidence = ids.map((id) => completed.find((activity) => activity.callId === id));
-    const missing = ids.filter((_, index) => !evidence[index]);
-    if (missing.length) return { ok: false, error: `These evidence call IDs are missing or unsuccessful: ${missing.join(', ')}.` };
-    if (completed.length && !ids.length) return { ok: false, error: 'The answer used Notion tools but cited no evidence_call_ids.' };
+    const requestedEvidence = requestedIds.map((id) => completed.find((activity) => activity.callId === id)).filter(Boolean);
+    const completeEvidence = completed.filter((activity) => !activity.resultIsIncomplete && !resultAppearsIncomplete(activity.resultExcerpt));
+    const evidence = requestedEvidence.length ? requestedEvidence : (completeEvidence.length ? completeEvidence : completed);
+    const ids = evidence.map((activity) => activity.callId);
     const incomplete = evidence.find((activity) => activity.resultIsIncomplete || resultAppearsIncomplete(activity.resultExcerpt));
     if (incomplete) return { ok: false, error: `Evidence ${incomplete.callId} is incomplete or paginated. Retrieve the missing content or next page before finishing.` };
     const lastEmptyIndex = evidence.reduce((last, activity) => activity.resultIsEmpty || resultAppearsEmpty(activity.resultExcerpt) ? Math.max(last, completed.indexOf(activity)) : last, -1);
@@ -600,10 +628,14 @@
   }
 
   async function routeMcpTools(profile, userRequest, tools) {
-    if ((tools || []).length <= MAX_MODEL_MCP_TOOLS) return tools || [];
     const catalog = tools.map((tool) => ({ name: tool.name, description: String(tool.description || '').slice(0, 700) }));
-    const instruction = `Return only a ${ROUTE_TOOL_NAME} function call. Choose at most ${MAX_MODEL_MCP_TOOLS} exact names. Understand the request in its original language. Include prerequisite discovery/read tools as well as any final action tool.`;
-    const prompt = `User request:\n${String(userRequest || '').slice(0, 6000)}\n\nAvailable MCP tool catalog:\n${JSON.stringify(catalog)}`;
+    const instruction = [
+      `Return only a ${ROUTE_TOOL_NAME} function call and understand the request in its original language.`,
+      'Set use_notion to true only when the user asks to read, find, summarize, create, update, or otherwise act on content in their Notion workspace.',
+      'General writing, conversation, explanations, brainstorming, calculations, coding, arbitrary text, and requests based only on attached or already supplied content do not require Notion.',
+      `When use_notion is true, choose at most ${MAX_MODEL_MCP_TOOLS} exact names and include prerequisite discovery/read tools. When false, return an empty tool_names string.`
+    ].join(' ');
+    const prompt = `Current user request:\n${String(userRequest || '').slice(0, 6000)}\n\nAvailable Notion MCP tool catalog:\n${JSON.stringify(catalog)}`;
     const routerTool = toolRouterFunctionDefinition(profile.apiType);
     const body = profile.apiType === 'responses'
       ? { model: profile.model, instructions: instruction, input: [{ role: 'user', content: prompt }], stream: false, store: false, tools: [routerTool], tool_choice: 'required' }
@@ -613,13 +645,38 @@
       const call = profile.apiType === 'responses'
         ? responseToolCallsFromPayload(payload).find((item) => item.name === ROUTE_TOOL_NAME)
         : chatToolCallsFromPayload(payload).find((item) => item.function?.name === ROUTE_TOOL_NAME);
-      if (!call) return fallbackMcpTools(tools);
+      if (!call) return [];
       const args = parseToolArguments(profile.apiType === 'responses' ? call.arguments : call.function.arguments);
+      if (args.use_notion !== true) return [];
       const names = String(args.tool_names || '').split(',').map((name) => name.trim()).filter(Boolean);
       const selected = selectMcpToolsByName(tools, names);
       return selected.length ? selected : fallbackMcpTools(tools);
     } catch (_) {
-      return fallbackMcpTools(tools);
+      return [];
+    }
+  }
+
+  async function requestNeedsNotionTools(profile, userRequest) {
+    const instruction = [
+      `Return only a ${ROUTE_TOOL_NAME} function call.`,
+      'Set use_notion to true only if completing the current request requires reading, searching, creating, or changing content in the user\'s Notion workspace.',
+      'Set it to false for general writing, chat, explanations, brainstorming, coding, calculations, arbitrary text, and work based only on content already supplied by the user.',
+      'Set tool_names to an empty string.'
+    ].join(' ');
+    const body = profile.apiType === 'responses'
+      ? { model: profile.model, instructions: instruction, input: [{ role: 'user', content: String(userRequest || '').slice(0, 6000) }], stream: false, store: false, tools: [toolRouterFunctionDefinition('responses')], tool_choice: 'required' }
+      : { model: profile.model, messages: [{ role: 'system', content: instruction }, { role: 'user', content: String(userRequest || '').slice(0, 6000) }], stream: false, tools: [toolRouterFunctionDefinition('chat_completions')], tool_choice: 'required' };
+    try {
+      const payload = await requestProviderPayload(profile, body);
+      const call = profile.apiType === 'responses'
+        ? responseToolCallsFromPayload(payload).find((item) => item.name === ROUTE_TOOL_NAME)
+        : chatToolCallsFromPayload(payload).find((item) => item.function?.name === ROUTE_TOOL_NAME);
+      if (!call) return false;
+      const args = parseToolArguments(profile.apiType === 'responses' ? call.arguments : call.function.arguments);
+      return args.use_notion === true;
+    } catch (error) {
+      if (error?.message === 'Request stopped.') throw error;
+      return false;
     }
   }
 
@@ -637,7 +694,7 @@
     });
     const body = {
       model: profile.model,
-      instructions: profileSystemPrompt(profile) || undefined,
+      instructions: profileSystemPrompt(profile, options.includeMcpInstruction !== false) || undefined,
       input,
       stream: options.stream !== false,
       store: false
@@ -831,7 +888,8 @@
     buildChatCompletionsBody, buildResponsesBody, parseSseText, chatDeltaFromEvent,
     responseDeltaFromEvent, extractBufferedText, normalizeMcpSchemaForModel, selectMcpToolsByName, fallbackMcpTools,
     mcpFunctionDefinitions, completionFunctionDefinition, reviewFunctionDefinition, toolRouterFunctionDefinition, mcpCompletionReviewPrompt, argumentsForMcpTool, isToolGrammarCompilationError,
-    completionRequiredInstruction, resultAppearsEmpty, resultAppearsIncomplete, mcpResultIsError, validateMcpCompletion,
+    completionRequiredInstruction, noteRepeatedAttempt, clearRepeatedAttempt, throwIfToolCallMadeNoProgress, throwIfCompletionMadeNoProgress,
+    resultAppearsEmpty, resultAppearsIncomplete, mcpResultIsError, validateMcpCompletion,
     chatToolCallsFromPayload, responseToolCallsFromPayload, mcpToolMayRunWithoutApproval, isOfficialNotionMcpServer, parseResponseHeaders, parseMcpResponseText, escapeHtml,
     safeLink, renderMarkdown, isNotionAiTriggerLabel, secretsForProfile, attachmentsText,
     messageContentWithAttachments, retainedMcpEvidenceText, isSupportedTextFile, modelGroup, modelContextInfo, contextLimitFromModelRecord,
@@ -890,11 +948,13 @@
   let activeToolApproval = null;
   let chatSearch = '';
   let modelSearch = '';
+  let composerDraft = '';
+  let settingsScrollTop = 0;
+  let settingsAdvancedOpen = false;
   let draftAttachments = [];
   let includeVisiblePage = false;
   let lastNotionSelection = '';
   let replacementObserver = null;
-  let inputIsolationInstalled = false;
   let suppressedFullPageUrl = '';
   let observedLocationUrl = '';
   let pendingFullPageOpen = false;
@@ -1188,10 +1248,7 @@
         fullPageWorkspaceInlinePosition = workspace.style.position;
         if (getComputedStyle(workspace).position === 'static') workspace.style.position = 'relative';
       }
-      const toolbar = workspace.querySelector('[role="toolbar"]');
-      const workspaceRect = workspace.getBoundingClientRect();
-      const toolbarBottom = toolbar ? toolbar.getBoundingClientRect().bottom - workspaceRect.top : 0;
-      host.style.cssText = `position:absolute;inset:${Math.max(0, Math.round(toolbarBottom))}px 0 0;z-index:2;pointer-events:none;`;
+      host.style.cssText = 'position:absolute;inset:0;z-index:2;pointer-events:none;';
       if (host.parentElement !== workspace) workspace.appendChild(host);
       return;
     }
@@ -1215,24 +1272,12 @@
     } else closePanel();
   }
 
-  function isolateByonInputFromNotion(event) {
-    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
-    if (!host || !path.includes(host)) return;
-    if (event.type === 'keydown') handleByonKeydownBeforeNotion(event, path[0]);
-    // Do not prevent normal browser editing or clipboard defaults. Stopping the
-    // composed event is enough to keep Notion's global editor handlers out.
-    event.stopImmediatePropagation();
-  }
-
   function installInputIsolation() {
-    if (!inputIsolationInstalled) {
-      for (const type of ['keydown', 'keypress', 'keyup', 'paste', 'copy', 'cut']) {
-        global.addEventListener(type, isolateByonInputFromNotion, true);
-      }
-      inputIsolationInstalled = true;
-    }
     for (const type of ['keydown', 'keypress', 'keyup', 'beforeinput', 'input', 'paste', 'copy', 'cut', 'compositionstart', 'compositionupdate', 'compositionend']) {
-      shadow.addEventListener(type, (event) => event.stopPropagation());
+      shadow.addEventListener(type, (event) => {
+        if (event.type === 'keydown') handleByonKeydownBeforeNotion(event, event.composedPath?.()[0] || event.target);
+        event.stopPropagation();
+      });
     }
   }
 
@@ -1318,12 +1363,11 @@
     }
     let left = 0;
     let right = global.innerWidth;
-    let top = 0;
+    const top = 0;
     if (toolbar) {
       const rect = toolbar.getBoundingClientRect();
       left = Math.max(0, Math.round(rect.left));
       right = Math.min(global.innerWidth, Math.round(rect.right));
-      top = Math.max(0, Math.round(rect.bottom));
     } else if (sidebar) {
       const rect = sidebar.getBoundingClientRect();
       const visible = getComputedStyle(sidebar).display !== 'none' && getComputedStyle(sidebar).visibility !== 'hidden';
@@ -1498,6 +1542,12 @@
   function render() {
     ensureHost();
     if (panel.hidden) return;
+    const previousSettings = panel.querySelector('.settings-view');
+    if (previousSettings) {
+      collectSettingsForm();
+      settingsScrollTop = previousSettings.scrollTop;
+      settingsAdvancedOpen = Boolean(previousSettings.querySelector('details')?.open);
+    }
     const profile = activeProfile();
     const chat = activeChat();
     const usage = contextUsage(profile, chat);
@@ -1509,6 +1559,7 @@
     if (settingsOpen && viewMode !== 'full') {
       panel.innerHTML = `<div class="resize-handle" aria-hidden="true"></div><div class="settings-shell">${settingsHtml(profile)}</div>`;
       bindPanelEvents();
+      restoreSettingsViewState();
       return;
     }
     panel.innerHTML = `<div class="resize-handle" aria-hidden="true"></div>
@@ -1517,7 +1568,7 @@
         <button class="chat-title-button" data-action="toggle-history" aria-expanded="${historyOpen}" aria-haspopup="dialog">${byonIcon('header-icon')}<span>${escapeHtml(chat?.title || 'New chat')}</span>${iconSvg('chevronDown', 'chevron-icon')}</button>
         <div class="header-actions">
           <button class="icon-button" data-action="new-chat" aria-label="New chat" title="New chat">${iconSvg('plus')}</button>
-          <button class="icon-button" data-action="toggle-view-mode" aria-label="${viewMode === 'full' ? 'Use side panel' : 'Open full page'}" title="${viewMode === 'full' ? 'Use side panel' : 'Open full page'}">${iconSvg(viewMode === 'full' ? 'shrink' : 'expand')}</button>
+          ${viewMode === 'full' ? '' : `<button class="icon-button" data-action="toggle-view-mode" aria-label="Open full page" title="Open full page">${iconSvg('expand')}</button>`}
           <button class="icon-button" data-action="open-settings" aria-label="BYON settings" title="BYON settings">${iconSvg('more')}</button>
           ${viewMode === 'full' ? '' : `<button class="icon-button" data-action="close-panel" aria-label="Close BYON" title="Close panel">${iconSvg('collapse')}</button>`}
         </div>
@@ -1527,7 +1578,7 @@
       <footer class="composer-area">
         <div class="composer-wrap">
           ${(draftAttachments.length || includeVisiblePage || lastNotionSelection) ? `<div class="attachment-row">${attachmentChips()}${includeVisiblePage ? `<span class="attachment-chip context-attachment">${iconSvg('file')}<span>Visible page</span><button data-action="toggle-page-context" aria-label="Remove visible page context">×</button></span>` : ''}${lastNotionSelection ? `<span class="attachment-chip context-attachment">${iconSvg('file')}<span>Selection</span></span>` : ''}</div>` : ''}
-          <textarea id="byon-composer" rows="1" placeholder="Do anything with AI…" aria-label="Message BYON"></textarea>
+          <textarea id="byon-composer" rows="1" placeholder="Do anything with AI…" aria-label="Message BYON">${escapeHtml(composerDraft)}</textarea>
           <div class="composer-toolbar">
             <div class="toolbar-left">
               <button class="round-tool" data-action="toggle-plus" aria-label="Add files or page context" aria-expanded="${plusOpen}">${iconSvg('plus')}</button>
@@ -1551,8 +1602,37 @@
       </div>
       ${settingsOpen ? `<aside class="full-settings-sidebar" aria-label="BYON settings sidebar">${settingsHtml(profile)}</aside>` : ''}`;
     bindPanelEvents();
+    restoreSettingsViewState();
     const list = shadow.getElementById('message-list');
     if (list) list.scrollTop = list.scrollHeight;
+  }
+
+  function restoreSettingsViewState() {
+    const settingsView = panel.querySelector('.settings-view');
+    if (!settingsView) return;
+    settingsView.scrollTop = settingsScrollTop;
+    const advanced = settingsView.querySelector('details');
+    if (advanced) advanced.open = settingsAdvancedOpen;
+  }
+
+  function renderConversationUpdate() {
+    if (!panel || panel.hidden) return;
+    const chat = activeChat();
+    const list = shadow.getElementById('message-list');
+    const hadMessages = panel.classList.contains('has-chat');
+    const hasMessages = Boolean(chat?.messages.length);
+    panel.classList.toggle('has-chat', hasMessages);
+    panel.classList.toggle('start-chat', !hasMessages);
+    if (list) {
+      const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+      list.innerHTML = `<div class="message-column">${hasMessages ? chat.messages.map(messageHtml).join('') : ''}</div>`;
+      if (nearBottom || !hadMessages) list.scrollTop = list.scrollHeight;
+    }
+    const currentSend = panel.querySelector('.send');
+    if (currentSend) currentSend.outerHTML = currentRequest || mcpOperationActive
+      ? `<button class="send stop" data-action="stop-request" aria-label="Stop response">${iconSvg('stop')}</button>`
+      : `<button class="send" data-action="send-message" aria-label="Send message">${iconSvg('send')}</button>`;
+    updateContextMeter(composerDraft);
   }
 
   function bindPanelEvents() {
@@ -1612,20 +1692,19 @@
       if (event.target.id === 'file-picker') readSelectedFiles(event.target.files);
     };
     panel.oninput = (event) => {
-      if (event.target.id === 'byon-composer') updateContextMeter(event.target.value);
+      if (event.target.id === 'byon-composer') {
+        composerDraft = event.target.value;
+        updateContextMeter(composerDraft);
+      }
       if (event.target.id === 'chat-search') {
         chatSearch = event.target.value;
-        const position = chatSearch.length;
-        render();
-        const input = shadow.getElementById('chat-search');
-        input?.focus(); input?.setSelectionRange(position, position);
+        const rows = event.target.closest('.chat-popover')?.querySelector('.popover-scroll');
+        if (rows) rows.innerHTML = chatRows();
       }
       if (event.target.id === 'model-search') {
         modelSearch = event.target.value;
-        const position = modelSearch.length;
-        render();
-        const input = shadow.getElementById('model-search');
-        input?.focus(); input?.setSelectionRange(position, position);
+        const rows = event.target.closest('.model-popover')?.querySelector('.popover-scroll');
+        if (rows) rows.innerHTML = groupedModelRows(activeProfile());
       }
     };
     const handle = panel.querySelector('.resize-handle');
@@ -1833,6 +1912,9 @@
     }
     const attachments = draftAttachments.map((attachment) => ({ ...attachment }));
     draftAttachments = [];
+    composerDraft = '';
+    if (composer) composer.value = '';
+    updateContextMeter('');
     sendMessage(content, undefined, attachments);
   }
 
@@ -1848,13 +1930,35 @@
     chat.messages.push(assistant);
     chat.updatedAt = nowIso();
     await persist();
-    render();
+    renderConversationUpdate();
     performCompletion(chat, assistant, pageContext());
   }
 
-  function performCompletion(chat, assistant, context) {
+  async function performCompletion(chat, assistant, context, allowMcp = true) {
     const profile = activeProfile();
-    if (profile.mcpEnabled) {
+    if (profile.mcpEnabled && allowMcp) {
+      mcpOperationActive = true;
+      assistant.content = 'Deciding whether Notion is needed…';
+      renderConversationUpdate();
+      const latestUserMessage = [...chat.messages].reverse().find((message) => message.role === 'user');
+      let needsNotion;
+      try { needsNotion = await requestNeedsNotionTools(profile, latestUserMessage?.content || ''); }
+      catch (error) {
+        mcpOperationActive = false;
+        if (error.message === 'Request stopped.') {
+          assistant.pending = false;
+          assistant.content = '[Stopped]';
+          await persist();
+          renderConversationUpdate();
+        } else finishWithError(assistant, error);
+        return;
+      }
+      if (!needsNotion) {
+        mcpOperationActive = false;
+        performCompletion(chat, assistant, context, false);
+        return;
+      }
+      mcpOperationActive = false;
       performMcpCompletion(chat, assistant, context);
       return;
     }
@@ -1862,8 +1966,8 @@
     let body;
     try {
       body = profile.apiType === 'responses'
-        ? buildResponsesBody(profile, messages, context)
-        : buildChatCompletionsBody(profile, messages, context);
+        ? buildResponsesBody(profile, messages, context, { includeMcpInstruction: allowMcp })
+        : buildChatCompletionsBody(profile, messages, context, { includeMcpInstruction: allowMcp });
     } catch (error) { finishWithError(assistant, error); return; }
     let offset = 0;
     let accumulated = '';
@@ -1905,14 +2009,14 @@
           assistant.content = accumulated;
           assistant.pending = false;
           chat.updatedAt = nowIso();
-          await persist(); render();
+          await persist(); renderConversationUpdate();
         },
         onerror: () => { currentRequest = null; finishWithError(assistant, new Error('Network request failed. Check the endpoint, manager host permission, and connection.')); },
         ontimeout: () => { currentRequest = null; finishWithError(assistant, new Error('The provider request timed out after 120 seconds.')); },
-        onabort: () => { currentRequest = null; assistant.pending = false; if (!assistant.content) assistant.content = '[Stopped]'; persist(); render(); }
+        onabort: () => { currentRequest = null; assistant.pending = false; if (!assistant.content) assistant.content = '[Stopped]'; persist(); renderConversationUpdate(); }
       });
       currentRequest = request;
-      render();
+      renderConversationUpdate();
     } catch (error) { finishWithError(assistant, error); }
   }
 
@@ -1959,7 +2063,7 @@
     }
     try {
       assistant.content = 'Connecting to Notion tools…';
-      render();
+      renderConversationUpdate();
       const session = await openMcpSession();
       if (stoppedOperationId === operationId) throw new Error('Request stopped.');
       if (!session.tools.length) throw new Error('Notion MCP connected but returned no tools. Reconnect Notion or check workspace permissions.');
@@ -1968,28 +2072,36 @@
         .map(({ role, content, attachments, toolActivities }) => ({ role, content, attachments, toolActivities }));
       const recentUserText = conversation.filter((message) => message.role === 'user').slice(-3).map((message) => message.content).join('\n');
       assistant.content = 'Selecting Notion tools…';
-      render();
-      const selectedTools = await routeMcpTools(profile, recentUserText, session.tools);
+      renderConversationUpdate();
+      let activeTools = await routeMcpTools(profile, recentUserText, session.tools);
+      if (!activeTools.length) {
+        mcpOperationActive = false;
+        performCompletion(chat, assistant, context, false);
+        return;
+      }
       let schemaMode = 'normalized';
-      let definitions = mcpFunctionDefinitions(selectedTools, profile.apiType);
+      let definitions = mcpFunctionDefinitions(activeTools, profile.apiType);
       let toolsByWireName = new Map(definitions.map((definition) => [definition.wireName, definition]));
       let modelTools = [...definitions.map((definition) => definition.modelTool), completionFunctionDefinition(profile.apiType)];
       let finalText = '';
       let requireToolCall = false;
-      let completionCorrections = 0;
       let pendingReviewFeedback = '';
+      let round = 0;
+      const repeatedCompletionAttempt = { signature: '', count: 0 };
+      const repeatedToolResult = { signature: '', count: 0 };
       const approvalContext = { allowRemainingTools: false };
-      for (let round = 0; round < MAX_MCP_TOOL_ROUNDS; round += 1) {
+      while (!finalText) {
         if (stoppedOperationId === operationId) throw new Error('Request stopped.');
         if (pendingReviewFeedback) {
-          const rerouted = await routeMcpTools(profile, `${recentUserText}\n\nVerifier feedback:\n${pendingReviewFeedback}`, session.tools);
-          definitions = mcpFunctionDefinitions(rerouted, profile.apiType, { schemaMode });
+          activeTools = await routeMcpTools(profile, `${recentUserText}\n\nVerifier feedback:\n${pendingReviewFeedback}`, session.tools);
+          definitions = mcpFunctionDefinitions(activeTools, profile.apiType, { schemaMode });
           toolsByWireName = new Map(definitions.map((definition) => [definition.wireName, definition]));
           modelTools = [...definitions.map((definition) => definition.modelTool), completionFunctionDefinition(profile.apiType)];
           pendingReviewFeedback = '';
         }
         assistant.content = round ? 'Working with Notion…' : 'Thinking…';
-        render();
+        round += 1;
+        renderConversationUpdate();
         const body = profile.apiType === 'responses'
           ? buildResponsesBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined })
           : buildChatCompletionsBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined });
@@ -1998,7 +2110,7 @@
         catch (error) {
           if (schemaMode !== 'normalized' || !isToolGrammarCompilationError(error)) throw error;
           schemaMode = 'json_envelope';
-          definitions = mcpFunctionDefinitions(selectedTools, profile.apiType, { schemaMode });
+          definitions = mcpFunctionDefinitions(activeTools, profile.apiType, { schemaMode });
           toolsByWireName = new Map(definitions.map((definition) => [definition.wireName, definition]));
           modelTools = [...definitions.map((definition) => definition.modelTool), completionFunctionDefinition(profile.apiType)];
           const fallbackBody = profile.apiType === 'responses'
@@ -2012,15 +2124,13 @@
           const calls = responseToolCallsFromPayload(payload);
           if (!calls.length) {
             const candidate = extractBufferedText(profile, JSON.stringify(payload));
-            if (completionCorrections < MAX_COMPLETION_CORRECTIONS) {
-              completionCorrections += 1;
-              for (const item of payload.output || []) conversation.push(item);
-              conversation.push({ role: 'user', content: completionRequiredInstruction(candidate) });
-              pendingReviewFeedback = `The model returned an unsubmitted draft instead of completing the task: ${String(candidate || '').slice(0, 2000)}`;
-              requireToolCall = true;
-              continue;
-            }
-            throw new Error(`The model did not submit its answer through ${FINALIZE_TOOL_NAME}. Try a model with reliable function calling.`);
+            throwIfCompletionMadeNoProgress(repeatedCompletionAttempt, `draft\n${String(candidate || '')}`);
+            clearRepeatedAttempt(repeatedToolResult);
+            for (const item of payload.output || []) conversation.push(item);
+            conversation.push({ role: 'user', content: completionRequiredInstruction(candidate) });
+            pendingReviewFeedback = `The model returned an unsubmitted draft instead of completing the task: ${String(candidate || '').slice(0, 2000)}`;
+            requireToolCall = true;
+            continue;
           }
           for (const item of payload.output || []) conversation.push(item);
           for (const call of calls) {
@@ -2037,9 +2147,9 @@
               const completionError = validation.ok ? review.feedback : validation.error;
               if (validation.ok) pendingReviewFeedback = completionError;
               conversation.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify({ accepted: false, error: completionError }) });
-              completionCorrections += 1;
+              throwIfCompletionMadeNoProgress(repeatedCompletionAttempt, `completion\n${String(call.arguments || '')}\n${completionError}`);
+              clearRepeatedAttempt(repeatedToolResult);
               if (!pendingReviewFeedback) pendingReviewFeedback = completionError;
-              if (completionCorrections > MAX_COMPLETION_CORRECTIONS) throw new Error(`The model could not produce an evidence-supported final answer: ${completionError}`);
               requireToolCall = true;
               continue;
             }
@@ -2048,6 +2158,8 @@
             const argumentsObject = argumentsForMcpTool(definition, call.arguments);
             const output = await executeMcpToolCall(session, assistant, definition, argumentsObject, approvalContext, call.call_id);
             if (stoppedOperationId === operationId) throw new Error('Request stopped.');
+            throwIfToolCallMadeNoProgress(repeatedToolResult, definition.mcpName, argumentsObject, output);
+            clearRepeatedAttempt(repeatedCompletionAttempt);
             conversation.push({ type: 'function_call_output', call_id: call.call_id, output });
           }
           if (finalText) break;
@@ -2056,15 +2168,13 @@
           const message = payload?.choices?.[0]?.message;
           if (!calls.length) {
             const candidate = extractBufferedText(profile, JSON.stringify(payload));
-            if (completionCorrections < MAX_COMPLETION_CORRECTIONS) {
-              completionCorrections += 1;
-              conversation.push({ role: 'assistant', content: candidate });
-              conversation.push({ role: 'user', content: completionRequiredInstruction(candidate) });
-              pendingReviewFeedback = `The model returned an unsubmitted draft instead of completing the task: ${String(candidate || '').slice(0, 2000)}`;
-              requireToolCall = true;
-              continue;
-            }
-            throw new Error(`The model did not submit its answer through ${FINALIZE_TOOL_NAME}. Try a model with reliable function calling.`);
+            throwIfCompletionMadeNoProgress(repeatedCompletionAttempt, `draft\n${String(candidate || '')}`);
+            clearRepeatedAttempt(repeatedToolResult);
+            conversation.push({ role: 'assistant', content: candidate });
+            conversation.push({ role: 'user', content: completionRequiredInstruction(candidate) });
+            pendingReviewFeedback = `The model returned an unsubmitted draft instead of completing the task: ${String(candidate || '').slice(0, 2000)}`;
+            requireToolCall = true;
+            continue;
           }
           conversation.push({ role: 'assistant', content: message?.content || '', tool_calls: calls });
           for (const call of calls) {
@@ -2081,9 +2191,9 @@
               const completionError = validation.ok ? review.feedback : validation.error;
               if (validation.ok) pendingReviewFeedback = completionError;
               conversation.push({ role: 'tool', tool_call_id: call.id, name: FINALIZE_TOOL_NAME, content: JSON.stringify({ accepted: false, error: completionError }) });
-              completionCorrections += 1;
+              throwIfCompletionMadeNoProgress(repeatedCompletionAttempt, `completion\n${String(call.function?.arguments || '')}\n${completionError}`);
+              clearRepeatedAttempt(repeatedToolResult);
               if (!pendingReviewFeedback) pendingReviewFeedback = completionError;
-              if (completionCorrections > MAX_COMPLETION_CORRECTIONS) throw new Error(`The model could not produce an evidence-supported final answer: ${completionError}`);
               requireToolCall = true;
               continue;
             }
@@ -2092,27 +2202,28 @@
             const argumentsObject = argumentsForMcpTool(definition, call.function?.arguments);
             const output = await executeMcpToolCall(session, assistant, definition, argumentsObject, approvalContext, call.id);
             if (stoppedOperationId === operationId) throw new Error('Request stopped.');
+            throwIfToolCallMadeNoProgress(repeatedToolResult, definition.mcpName, argumentsObject, output);
+            clearRepeatedAttempt(repeatedCompletionAttempt);
             conversation.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: output });
           }
           if (finalText) break;
         }
       }
-      if (!finalText) throw new Error(`The model did not produce a final answer after ${MAX_MCP_TOOL_ROUNDS} Notion tool rounds.`);
       assistant.content = finalText;
       assistant.pending = false;
       chat.updatedAt = nowIso();
       await persist();
-      render();
+      renderConversationUpdate();
     } catch (error) {
       if (error.message === 'Request stopped.') {
         assistant.pending = false;
         assistant.error = '';
         assistant.content = assistant.content && !/^(Connecting|Thinking|Working)/.test(assistant.content) ? assistant.content : '[Stopped]';
-        await persist(); render();
+        await persist(); renderConversationUpdate();
       } else finishWithError(assistant, error);
     } finally {
       mcpOperationActive = false;
-      render();
+      renderConversationUpdate();
     }
   }
 
@@ -2131,7 +2242,7 @@
     };
     if (!Array.isArray(assistant.toolActivities)) assistant.toolActivities = [];
     assistant.toolActivities.push(activity);
-    render();
+    renderConversationUpdate();
     return activity;
   }
 
@@ -2141,7 +2252,7 @@
     activeToolApproval = null;
     pending.activity.status = decision === 'deny' ? 'denied' : 'running';
     if (decision === 'always') pending.approvalContext.allowRemainingTools = true;
-    render();
+    renderConversationUpdate();
     pending.resolve(decision !== 'deny');
   }
 
@@ -2171,16 +2282,16 @@
       if (mcpResultIsError(output)) {
         activity.status = 'failed';
         activity.error = 'Notion MCP reported that this tool call failed.';
-        render();
+        renderConversationUpdate();
         return output;
       }
       activity.status = 'completed';
-      render();
+      renderConversationUpdate();
       return output;
     } catch (error) {
       activity.status = 'failed';
       activity.error = redactSecret(error.message || error, secretsForProfile(activeProfile(), state.notionMcp));
-      render();
+      renderConversationUpdate();
       throw error;
     }
   }
@@ -2188,14 +2299,14 @@
   let renderTimer = null;
   function throttledRender() {
     if (renderTimer) return;
-    renderTimer = setTimeout(() => { renderTimer = null; render(); }, 50);
+    renderTimer = setTimeout(() => { renderTimer = null; renderConversationUpdate(); }, 50);
   }
 
   function finishWithError(assistant, error) {
     currentRequest = null;
     assistant.pending = false;
     assistant.error = redactSecret(error.message || error, secretsForProfile(activeProfile(), state.notionMcp));
-    persist(); render();
+    persist(); renderConversationUpdate();
   }
 
   function stopRequest() {
@@ -2225,13 +2336,12 @@
     const chat = activeChat();
     const message = chat?.messages[index];
     if (!message || message.role !== 'user' || currentRequest || mcpOperationActive) return;
-    const composer = shadow.getElementById('byon-composer');
-    composer.value = message.content;
+    composerDraft = message.content;
     draftAttachments = (message.attachments || []).map((attachment) => ({ ...attachment }));
     chat.messages = chat.messages.slice(0, index);
     persist(); render();
     const nextComposer = shadow.getElementById('byon-composer');
-    nextComposer.value = message.content;
+    nextComposer.value = composerDraft;
     nextComposer.focus();
   }
 
@@ -2515,6 +2625,7 @@
     .side-panel .approval-mode-button{width:28px;padding:4px 5px}.side-panel .approval-mode-button>span,.side-panel .approval-mode-button>.chevron-icon{display:none}
     .tool-activity{margin:5px 0 10px;padding:9px 10px;border-radius:9px;background:var(--ca-bacSecTra,var(--faint));box-shadow:inset 0 0 0 1px var(--ca-borPriTra,var(--border));font-size:12px}.tool-activity-heading{display:flex;align-items:center;gap:7px;min-height:20px}.tool-activity-heading strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}.tool-status-dot{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:var(--c-yelBacAccPri,#d8a32f)}.tool-activity.running .tool-status-dot{background:var(--c-bluBacAccPri,#2383e2);animation:byon-tool-pulse 1.1s ease-in-out infinite}.tool-activity.completed .tool-status-dot{background:var(--c-greBacAccPri,#46a171)}.tool-activity.denied .tool-status-dot,.tool-activity.failed .tool-status-dot{background:var(--c-redBacAccPri,#e03e3e)}.tool-status-label{margin-inline-start:auto;color:var(--c-texTer,var(--muted));white-space:nowrap}.tool-activity details{margin:5px 0 0}.tool-activity summary{width:fit-content;cursor:pointer;color:var(--c-texTer,var(--muted));user-select:none}.tool-activity pre{max-height:180px;margin:7px 0 0;padding:8px;overflow:auto;border-radius:6px;background:var(--c-bacPri,var(--panel));font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.tool-approval-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.tool-approval-actions button{min-height:28px;border-radius:6px;padding:4px 9px}.tool-allow{background:var(--c-greBacAccPri,#46a171);color:var(--c-texInvPri,#fff)}.tool-always{background:var(--ca-bacIntTra,var(--faint));color:var(--c-texPri,var(--text));box-shadow:inset 0 0 0 1px var(--ca-borPriTra,var(--border))}.tool-deny{background:var(--c-redBacAccPri,#e03e3e);color:var(--c-texInvPri,#fff)}.tool-error{margin-top:7px;color:var(--c-redTexPri,#e03e3e)}@keyframes byon-tool-pulse{50%{opacity:.35}}
     .chat-shell{position:relative;display:flex;flex:1 1 auto;min-width:0;height:100%;flex-direction:column;overflow:hidden}.full-page{position:absolute;inset:0;width:auto;max-width:none;border:0;box-shadow:none;animation:byon-panel-in 180ms cubic-bezier(.2,.8,.2,1);flex-direction:row}.full-page .resize-handle{display:none}.full-page .panel-header{padding-inline:12px 16px}.full-page .chat-title-button{max-width:min(50%,420px)}.full-page .messages{width:100%;padding:16px 48px 132px;scrollbar-gutter:stable}.full-page .message-column{width:100%;max-width:798px;margin:0 auto}.full-page.has-chat .composer-area{position:absolute;inset-inline:0;bottom:0;width:min(710px,calc(100% - 64px));margin:0 auto;padding:8px 0 16px;background:linear-gradient(transparent 0,var(--c-bacPri,var(--panel)) 20%)}.full-page.start-chat .messages{overflow:hidden;padding:0 48px;display:flex;align-items:stretch}.full-page.start-chat .message-column{max-width:710px;display:flex;flex:1}.full-page.start-chat .landing{width:100%;min-height:0;justify-content:flex-end;padding-bottom:24px}.full-page.start-chat .landing-icon{width:64px;height:64px}.full-page.start-chat .landing h1{font-size:20px;line-height:26px;margin-top:16px}.full-page.start-chat .composer-area{width:min(710px,calc(100% - 96px));margin:0 auto;padding:0 0 15vh;background:var(--c-bacPri,var(--panel))}.full-page .composer-wrap textarea{min-height:68px;padding:16px 16px 2px 18px}.full-page .composer-toolbar{height:40px;padding:6px 10px}.full-page .attachment-row{padding:10px 12px 0}.full-page .plus-popover,.full-page .model-popover,.full-page .mode-popover,.full-page .approval-mode-popover{bottom:calc(15vh + 62px)}.full-page.has-chat .plus-popover,.full-page.has-chat .model-popover,.full-page.has-chat .mode-popover,.full-page.has-chat .approval-mode-popover{bottom:78px}.full-settings-sidebar{position:relative;z-index:6;flex:0 0 min(390px,38vw);width:min(390px,38vw);height:100%;overflow:hidden;background:var(--c-bacPri,var(--panel));border-inline-start:1px solid var(--c-borSec,var(--border));box-shadow:var(--c-shaOutSm,-1px 0 3px rgba(0,0,0,.05));animation:byon-panel-in 180ms cubic-bezier(.2,.8,.2,1)}.full-settings-sidebar .settings-view{padding:12px 18px 24px}.full-page.showing-settings{overflow:hidden}
+    .settings-shell{display:flex;min-height:0;height:100%;overflow:hidden}.settings-shell .settings-view{min-height:0;overscroll-behavior:contain}.full-page{pointer-events:none;background:transparent}.full-page .chat-shell{pointer-events:none;background:transparent}.full-page .messages,.full-page .composer-area,.full-page .full-settings-sidebar,.full-page .notion-popover{pointer-events:auto}.full-page .messages{background:var(--c-bacPri,var(--panel))}.full-page .panel-header{padding-inline:52px 16px;pointer-events:none;background:transparent}.full-page .panel-header button{pointer-events:auto}.full-settings-sidebar{animation:none}
     @media(max-width:760px){.panel{width:100%!important}.resize-handle{display:none}.messages{padding-inline:14px}.grid-two{grid-template-columns:1fr}.full-page.showing-settings .chat-shell{display:none}.full-settings-sidebar{flex-basis:100%;width:100%;border-inline-start:0}}
   `;
 
