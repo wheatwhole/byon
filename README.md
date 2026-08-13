@@ -16,7 +16,7 @@ BYON does not call, proxy, or emulate Notion's private AI backend. Notion AI rem
 - Local chat history, rename/delete/clear, stop, retry, edit-and-resend, and copy
 - Current Notion page title/URL and selected-text context
 - Optional visible-page excerpt, clearly marked as potentially incomplete
-- BYON-managed Notion MCP connection with OAuth/PKCE and approval required for every tool call
+- BYON-managed Notion MCP connection with OAuth/PKCE, inline tool activity, and configurable approvals
 - Backend-independent MCP tool translation for Chat Completions and Responses function calling
 - Light/dark theme support and a resizable panel
 - Notion-style anchored chat, attachment, model, and API-mode popovers
@@ -54,14 +54,24 @@ BYON acts as the MCP client instead of relying on a provider-specific flag or ho
 1. Click **Connect Notion** and complete Notion's OAuth authorization with PKCE.
 2. BYON connects directly to `https://mcp.notion.com/mcp` using Streamable HTTP and discovers the available tools.
 3. BYON translates each MCP tool into an ordinary function tool for Chat Completions or Responses.
-4. When the model requests a tool, BYON displays its name and arguments and offers only **Approve once** or **Deny**.
+4. When the model requests a tool, BYON shows an inline **Using tool: _name_** card with its arguments and live status.
 5. BYON calls Notion MCP directly, returns the result to the model, and continues until the model produces its answer.
+
+BYON exposes an internal completion function alongside the Notion tools. MCP-enabled answers must be submitted through that function with the exact tool-call IDs supporting the conclusion. BYON structurally rejects missing, failed, incomplete, paginated, or unconfirmed-empty evidence, then runs an isolated semantic review turn—with no Notion tools—to verify that the cited results actually answer the original request in whatever language it uses. Rejected review feedback returns to the active tool loop. Completed tool evidence is retained with the chat so a follow-up does not lose the Notion results behind the previous answer.
+
+When the MCP server exposes more tools than a local model can reliably compile at once, BYON performs a small structured routing turn over the live tool catalog. This replaces English keyword routing and works with requests in other languages; if routing fails, BYON falls back to prerequisite read/discovery tools.
+
+The composer includes three approval modes:
+
+- **Ask for approval** shows inline **Allow**, **Always allow**, and **Deny** controls. Always allow applies only to the remaining tool calls in that response.
+- **Approve for me** automatically runs only tools that the trusted Notion MCP server explicitly annotates as read-only, non-destructive, and closed-world. Missing or less-safe annotations cause an inline approval prompt.
+- **Run automatically** runs every Notion tool without prompting. Notion MCP changes are external workspace actions and are not sandboxed or automatically reversible.
 
 This does not require `mcp_enabled`, an Unsloth preset, or an endpoint that implements OpenAI's remote-MCP extension. The selected model endpoint must support standard function calling. Text-only OpenAI-compatible endpoints cannot use MCP.
 
-For local llama.cpp-compatible endpoints, BYON automatically simplifies full MCP JSON Schemas to the conservative subset accepted by tool-call grammar compilers and sends only the tools relevant to the current request. If the endpoint still reports a grammar-compilation error, BYON retries once using a minimal JSON-string argument envelope and unwraps it before calling MCP. Notion MCP still validates the actual arguments, so simplifying the model-facing schema does not bypass Notion's validation or BYON's approval dialog.
+For local llama.cpp-compatible endpoints, BYON automatically simplifies full MCP JSON Schemas to the conservative subset accepted by tool-call grammar compilers and sends only the tools relevant to the current request. If the endpoint still reports a grammar-compilation error, BYON retries once using a minimal JSON-string argument envelope and unwraps it before calling MCP. Notion MCP still validates the actual arguments, so simplifying the model-facing schema does not bypass Notion's validation or BYON's configured approval policy.
 
-If a local model narrates an unfinished action (for example, “let me fetch that database”) without emitting a structured tool call, BYON detects the stalled handoff and performs up to two corrective continuation turns with function calling required. This keeps multi-step reads moving while bounding retries and accepting normal completed answers immediately.
+If a model returns ordinary assistant text instead of the required structured completion, BYON redirects it back into the tool loop with function calling required. This is language-independent and bounds corrective attempts.
 
 The advanced connection section accepts OAuth, bearer-token, or unauthenticated Streamable HTTP servers. This is useful for authenticated MCP gateways and local bridges. A userscript cannot launch a process or access stdin/stdout, so native stdio transport is not possible. To use a stdio MCP server, run a trusted stdio-to-Streamable-HTTP bridge locally and enter its HTTP URL.
 
@@ -73,7 +83,7 @@ The advanced connection section accepts OAuth, bearer-token, or unauthenticated 
 - Notion OAuth access/refresh tokens and dynamic client registration are stored in isolated userscript-manager storage but are **not encrypted at rest**.
 - Visible-page context is opt-in. Notion virtualizes long pages, so it may not contain the full page.
 - Markdown rendering escapes raw HTML and permits only `http`, `https`, and `mailto` links.
-- Review every Notion MCP tool call before approval.
+- Use **Ask for approval** when you want to review every Notion MCP tool call; automatic modes can change external workspace data without a prompt.
 
 ## Compatibility
 

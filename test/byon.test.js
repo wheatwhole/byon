@@ -35,6 +35,18 @@ test('UI inherits Notion theme tokens instead of the operating-system theme', ()
   assert.match(source, /'paste', 'copy', 'cut'/);
 });
 
+test('tool approvals use inline Notion-style controls and expose three composer modes', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
+  assert.match(source, /Using tool:/);
+  assert.match(source, />Allow<\/button>/);
+  assert.match(source, />Always allow<\/button>/);
+  assert.match(source, />Deny<\/button>/);
+  assert.match(source, /Ask for approval/);
+  assert.match(source, /Approve for me/);
+  assert.match(source, /Run automatically/);
+  assert.doesNotMatch(source, /Approve Notion tool call\?/);
+});
+
 test('full-page mode is restricted to Notion /ai and navigates there when requested', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
   assert.match(source, /function isNotionAiPath\(\)[\s\S]*?\/\^\\\/ai/);
@@ -168,17 +180,16 @@ test('MCP schemas are normalized to the conservative llama.cpp subset', () => {
   assert.equal(normalized.properties.forbidden.not, undefined);
 });
 
-test('MCP tool selection keeps core read tools and intent-relevant write tools', () => {
+test('MCP tool routing accepts exact model-selected names and has a conservative fallback', () => {
   const tools = [
     'notion-search', 'notion-fetch', 'notion-create-pages', 'notion-update-page', 'notion-move-pages',
     'notion-get-users', 'notion-get-comments', 'notion-create-comment', 'notion-create-view', 'notion-download-attachment'
   ].map((name) => ({ name, description: name }));
-  const selected = Core.selectMcpToolsForTurn(tools, 'Create a new page under my Sunny page', 6).map((tool) => tool.name);
-  assert.deepEqual(selected.slice(0, 3), ['notion-search', 'notion-fetch', 'notion-create-pages']);
-  assert.equal(selected.length <= 6, true);
-  assert.equal(selected.includes('notion-download-attachment'), false);
-  const habits = Core.selectMcpToolsForTurn(tools.concat([{ name: 'notion-query-data-sources', description: 'Query databases' }]), 'What are my habits today?', 6).map((tool) => tool.name);
-  assert.equal(habits.includes('notion-query-data-sources'), true);
+  const selected = Core.selectMcpToolsByName(tools, ['notion-search', 'notion-fetch', 'notion-create-pages'], 5).map((tool) => tool.name);
+  assert.deepEqual(selected, ['notion-search', 'notion-fetch', 'notion-create-pages']);
+  assert.deepEqual(Core.fallbackMcpTools(tools, 3).map((tool) => tool.name), ['notion-search', 'notion-fetch', 'notion-create-pages']);
+  assert.equal(Core.toolRouterFunctionDefinition('chat_completions').function.name, 'byon_select_tools');
+  assert.equal(Core.toolRouterFunctionDefinition('responses').name, 'byon_select_tools');
 });
 
 test('MCP tool grammar fallback uses a universal string envelope and unwraps it', () => {
@@ -189,19 +200,11 @@ test('MCP tool grammar fallback uses a universal string envelope and unwraps it'
   assert.equal(Core.isToolGrammarCompilationError(new Error('HTTP 401: Unauthorized')), false);
 });
 
-test('stalled tool promises are detected without treating ordinary final answers as unfinished', () => {
-  assert.equal(Core.appearsToStopBeforeToolCall('I found the Habit Tracker. Let me fetch that database directly:'), true);
-  assert.equal(Core.appearsToStopBeforeToolCall('To answer that, I need to query the database.'), true);
-  assert.equal(Core.appearsToStopBeforeToolCall("I'll check the page now."), true);
-  assert.equal(Core.appearsToStopBeforeToolCall('Your habits today are walking, reading, and stretching.'), false);
-  assert.equal(Core.appearsToStopBeforeToolCall('You can fetch the database manually if you want more detail.'), false);
-});
-
-test('stalled tool continuation tells the model to call now rather than repeat progress', () => {
-  const instruction = Core.continuationInstruction('Let me fetch that.');
-  assert.match(instruction, /Call the appropriate available function now/);
-  assert.match(instruction, /Do not repeat the progress summary/);
-  assert.match(instruction, /Let me fetch that/);
+test('ordinary assistant text is redirected into the language-independent completion protocol', () => {
+  const instruction = Core.completionRequiredInstruction('Draft answer in any language.');
+  assert.match(instruction, /byon_complete_task/);
+  assert.match(instruction, /another Notion tool/);
+  assert.match(instruction, /Draft answer in any language/);
 });
 
 test('provider bodies can require a function call for a corrective continuation', () => {
@@ -217,6 +220,79 @@ test('tool call payloads are extracted for both OpenAI-compatible formats', () =
   const responseCall = { type: 'function_call', call_id: 'call_2', name: 'search', arguments: '{}' };
   assert.deepEqual(Core.chatToolCallsFromPayload({ choices: [{ message: { tool_calls: [chatCall] } }] }), [chatCall]);
   assert.deepEqual(Core.responseToolCallsFromPayload({ output: [responseCall, { type: 'message' }] }), [responseCall]);
+});
+
+test('MCP completion is an explicit function for both provider wire formats', () => {
+  const chat = Core.completionFunctionDefinition('chat_completions');
+  assert.equal(chat.function.name, 'byon_complete_task');
+  assert.deepEqual(chat.function.parameters.required, ['answer', 'evidence_call_ids']);
+  assert.equal(chat.function.parameters.properties.evidence_call_ids.type, 'string');
+  const responses = Core.completionFunctionDefinition('responses');
+  assert.equal(responses.name, 'byon_complete_task');
+  assert.equal(Core.reviewFunctionDefinition('chat_completions').function.name, 'byon_review_task');
+  assert.equal(Core.reviewFunctionDefinition('responses').name, 'byon_review_task');
+});
+
+test('MCP completion validates cited evidence structurally in any answer language', () => {
+  const activities = [
+    { callId: 'call_fetch', toolName: 'notion-fetch', arguments: { id: 'db' }, status: 'completed', resultExcerpt: '{"schema":{"Date":{"type":"date"}}}' },
+    { callId: 'call_empty', toolName: 'notion-query-data-sources', arguments: { query: 'today' }, status: 'completed', resultExcerpt: '{"results":[]}' },
+    { callId: 'call_confirm', toolName: 'notion-query-data-sources', arguments: { query: 'unfiltered' }, status: 'completed', resultExcerpt: '{"results":[{"name":"Read"}]}' }
+  ];
+  assert.equal(Core.validateMcpCompletion({ answer: 'Any conclusion in any language.', evidence_call_ids: 'call_empty' }, activities).ok, false);
+  assert.equal(Core.validateMcpCompletion({ answer: 'Any conclusion in any language.', evidence_call_ids: 'call_fetch,call_empty' }, activities).ok, false);
+  assert.equal(Core.validateMcpCompletion({ answer: 'Reading is scheduled today.', evidence_call_ids: 'call_confirm' }, activities).ok, true);
+  assert.equal(Core.validateMcpCompletion({ answer: 'Reading is scheduled today.', evidence_call_ids: 'missing' }, activities).ok, false);
+});
+
+test('semantic reviewer prompt checks evidence rather than matching answer phrases', () => {
+  const prompt = Core.mcpCompletionReviewPrompt('¿Qué hábitos tengo hoy?', 'No hay hábitos.', [
+    { callId: 'call_1', toolName: 'notion-query-data-sources', arguments: { query: 'hoy' }, status: 'completed', resultExcerpt: '{"results":[]}' }
+  ]);
+  assert.match(prompt, /whatever language/);
+  assert.match(prompt, /actual target and data/);
+  assert.match(prompt, /call_1/);
+});
+
+test('MCP completion rejects incomplete evidence', () => {
+  const activities = [{ callId: 'call_1', toolName: 'notion-fetch', arguments: { id: 'page' }, status: 'completed', resultExcerpt: '{"truncated":true,"unknown_block_count":2}' }];
+  assert.equal(Core.resultAppearsIncomplete(activities[0].resultExcerpt), true);
+  assert.equal(Core.validateMcpCompletion({ answer: 'The page says hello.', evidence_call_ids: ['call_1'] }, activities).ok, false);
+});
+
+test('MCP result inspection uses structure instead of prose and recognizes protocol errors', () => {
+  assert.equal(Core.resultAppearsEmpty('{"results":[]}'), true);
+  assert.equal(Core.resultAppearsEmpty('{"content":[],"structuredContent":{"results":[1]}}'), false);
+  assert.equal(Core.resultAppearsIncomplete('{"has_more":true,"next_cursor":"abc"}'), true);
+  assert.equal(Core.mcpResultIsError('{"isError":true,"content":[{"type":"text","text":"failed"}]}'), true);
+  assert.equal(Core.mcpResultIsError('{"isError":false,"results":[]}'), false);
+});
+
+test('completed MCP evidence is retained for follow-up turns', () => {
+  const content = Core.messageContentWithAttachments({
+    content: 'Reading is scheduled today.',
+    toolActivities: [{ callId: 'call_1', toolName: 'notion-query-data-sources', arguments: { query: 'today' }, status: 'completed', resultExcerpt: '{"results":[{"name":"Read"}]}' }]
+  });
+  assert.match(content, /Retained Notion MCP evidence/);
+  assert.match(content, /call_1/);
+  assert.match(content, /notion-query-data-sources/);
+  assert.match(content, /Read/);
+});
+
+test('Approve for me trusts only explicitly closed-world read-only MCP tools', () => {
+  assert.equal(Core.mcpToolMayRunWithoutApproval({ annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } }), true);
+  assert.equal(Core.mcpToolMayRunWithoutApproval({ annotations: { readOnlyHint: true, openWorldHint: true } }), false);
+  assert.equal(Core.mcpToolMayRunWithoutApproval({ annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false } }), false);
+  assert.equal(Core.mcpToolMayRunWithoutApproval({}), false);
+  assert.equal(Core.isOfficialNotionMcpServer('https://mcp.notion.com/mcp'), true);
+  assert.equal(Core.isOfficialNotionMcpServer('http://mcp.notion.com/mcp'), false);
+  assert.equal(Core.isOfficialNotionMcpServer('https://notion.example/mcp'), false);
+});
+
+test('approval mode migration defaults safely and preserves valid choices', () => {
+  assert.equal(Core.migrateState({ settings: {}, profiles: [profile()], chats: [] }).settings.toolApprovalMode, 'ask');
+  assert.equal(Core.migrateState({ settings: { toolApprovalMode: 'approve_for_me' }, profiles: [profile()], chats: [] }).settings.toolApprovalMode, 'approve_for_me');
+  assert.equal(Core.migrateState({ settings: { toolApprovalMode: 'invalid' }, profiles: [profile()], chats: [] }).settings.toolApprovalMode, 'ask');
 });
 
 test('Chat Completions preserves assistant tool calls and tool results across rounds', () => {
