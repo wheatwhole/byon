@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BYON - Bring Your Own Notion AI
 // @namespace    https://github.com/ciabidev/byon
-// @version      0.5.5
+// @version      0.5.7
 // @description  Use your own OpenAI-compatible AI backend from a native-styled Notion chat panel.
 // @author       wheatwhole
 // @license      MIT
@@ -20,7 +20,7 @@
 (function byonUserscript(global) {
   'use strict';
 
-  const VERSION = '0.5.5';
+  const VERSION = '0.5.7';
   const STORAGE_KEY = 'byon-state-v1';
   const FULL_PAGE_ROUTE_INTENT_KEY = 'byon-open-full-page-after-navigation';
   const PANEL_MIN_WIDTH = 320;
@@ -68,8 +68,8 @@
       headerName: 'x-api-key',
       headerPrefix: '',
       systemPrompt: '',
-      mcpEnabled: false,
       discoveredModels: [],
+      selectedModels: [],
       modelMetadata: {}
     };
   }
@@ -86,6 +86,7 @@
       },
       profiles: [profile],
       notionMcp: {
+        enabled: false,
         serverUrl: DEFAULT_MCP_URL,
         authMode: 'oauth',
         headers: {},
@@ -162,8 +163,8 @@
     return [profile?.apiKey, notionMcp?.accessToken, notionMcp?.refreshToken, notionMcp?.clientSecret, ...headers];
   }
 
-  function profileSystemPrompt(profile, includeMcpInstruction = profile.mcpEnabled) {
-    return [profile.systemPrompt && profile.systemPrompt.trim(), includeMcpInstruction && profile.mcpEnabled && NOTION_INSTRUCTION]
+  function profileSystemPrompt(profile, includeMcpInstruction = false) {
+    return [profile.systemPrompt && profile.systemPrompt.trim(), includeMcpInstruction && NOTION_INSTRUCTION]
       .filter(Boolean)
       .join('\n\n');
   }
@@ -266,7 +267,7 @@
   }
 
   function buildChatCompletionsBody(profile, messages, context, options = {}) {
-    const system = profileSystemPrompt(profile, options.includeMcpInstruction !== false);
+    const system = profileSystemPrompt(profile, options.includeMcpInstruction === true);
     const wireMessages = [];
     if (system) wireMessages.push({ role: 'system', content: system });
     let lastUserIndex = -1;
@@ -694,7 +695,7 @@
     });
     const body = {
       model: profile.model,
-      instructions: profileSystemPrompt(profile, options.includeMcpInstruction !== false) || undefined,
+      instructions: profileSystemPrompt(profile, options.includeMcpInstruction === true) || undefined,
       input,
       stream: options.stream !== false,
       store: false
@@ -848,16 +849,23 @@
     const fallback = defaultState();
     if (!raw || typeof raw !== 'object') return fallback;
     const profiles = Array.isArray(raw.profiles) && raw.profiles.length
-      ? raw.profiles.map((profile) => ({
-        ...defaultProfile(),
-        ...profile,
-        mcpEnabled: typeof profile.mcpEnabled === 'boolean' ? profile.mcpEnabled : Boolean(profile.mcpMode && profile.mcpMode !== 'off')
-      }))
+      ? raw.profiles.map((profile) => {
+        const migrated = { ...defaultProfile(), ...profile };
+        migrated.selectedModels = Array.isArray(profile.selectedModels)
+          ? Array.from(new Set(profile.selectedModels.filter(Boolean)))
+          : Array.from(new Set([profile.model, ...(profile.discoveredModels || [])].filter(Boolean)));
+        delete migrated.mcpEnabled;
+        delete migrated.mcpMode;
+        return migrated;
+      })
       : fallback.profiles;
     const legacyMcpProfile = profiles.find((profile) => profile.mcpAuthorization || profile.mcpHeaders);
     const notionMcp = {
       ...fallback.notionMcp,
       ...(raw.notionMcp && typeof raw.notionMcp === 'object' ? raw.notionMcp : {}),
+      enabled: typeof raw.notionMcp?.enabled === 'boolean'
+        ? raw.notionMcp.enabled
+        : (raw.profiles || []).some((profile) => Boolean(profile?.mcpEnabled || (profile?.mcpMode && profile.mcpMode !== 'off'))),
       headers: raw.notionMcp?.headers || legacyMcpProfile?.mcpHeaders || {},
       accessToken: raw.notionMcp?.accessToken || legacyMcpProfile?.mcpAuthorization || ''
     };
@@ -951,6 +959,9 @@
   let composerDraft = '';
   let settingsScrollTop = 0;
   let settingsAdvancedOpen = false;
+  let settingsEditingProfileId = null;
+  let settingsModelSearch = '';
+  let profileConnectionCheck = null;
   let draftAttachments = [];
   let includeVisiblePage = false;
   let lastNotionSelection = '';
@@ -1378,10 +1389,6 @@
     panel.style.setProperty('--byon-full-top', `${top}px`);
   }
 
-  function profileOptions() {
-    return state.profiles.map((profile) => `<option value="${escapeHtml(profile.id)}" ${profile.id === state.settings.activeProfileId ? 'selected' : ''}>${escapeHtml(profile.name)}</option>`).join('');
-  }
-
   function chatRows() {
     const query = chatSearch.trim().toLowerCase();
     const chats = state.chats.filter((chat) => !query || chat.title.toLowerCase().includes(query));
@@ -1400,7 +1407,7 @@
   }
 
   function availableModels(profile) {
-    return Array.from(new Set([profile.model, ...(profile.discoveredModels || [])].filter(Boolean)));
+    return Array.from(new Set([profile.model, ...(profile.selectedModels || [])].filter(Boolean)));
   }
 
   function profileModelContextInfo(profile, model) {
@@ -1424,7 +1431,7 @@
   function contextUsage(profile, chat, draft = '') {
     const history = (chat?.messages || []).map((message) => messageContentWithAttachments(message)).join('\n');
     const attachments = attachmentsText(draftAttachments);
-    const extra = [profileSystemPrompt(profile), lastNotionSelection, includeVisiblePage ? pageContext().excerpt : '', draft, attachments].filter(Boolean).join('\n');
+    const extra = [profileSystemPrompt(profile, state.notionMcp.enabled), lastNotionSelection, includeVisiblePage ? pageContext().excerpt : '', draft, attachments].filter(Boolean).join('\n');
     const used = estimatedTokenCount(`${history}\n${extra}`);
     const info = profileModelContextInfo(profile, profile.model);
     const limit = info.tokens || 128000;
@@ -1467,6 +1474,9 @@
       send: '<path d="M10 3.25a.75.75 0 0 1 .53.22l4.75 4.75a.75.75 0 1 1-1.06 1.06l-3.47-3.47V16a.75.75 0 0 1-1.5 0V5.81L5.78 9.28a.75.75 0 0 1-1.06-1.06l4.75-4.75A.75.75 0 0 1 10 3.25"/>',
       stop: '<rect x="6" y="6" width="8" height="8" rx="1.5"/>',
       trash: '<path d="M7.25 3.5A1.5 1.5 0 0 1 8.75 2h2.5a1.5 1.5 0 0 1 1.5 1.5v.75H16a.75.75 0 0 1 0 1.5h-.75v10A2.25 2.25 0 0 1 13 18H7a2.25 2.25 0 0 1-2.25-2.25v-10H4a.75.75 0 0 1 0-1.5h3.25zm1.5.75h2.5V3.5h-2.5zm-2.5 1.5v10c0 .41.34.75.75.75h6c.41 0 .75-.34.75-.75v-10zM8.5 8a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 8.5 8m3 0a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 11.5 8"/>',
+      pencil: '<path d="M14.9 2.7a1.75 1.75 0 0 1 2.48 2.48L7.12 15.44a.75.75 0 0 1-.34.2l-3.5.88a.75.75 0 0 1-.91-.91l.88-3.5a.75.75 0 0 1 .2-.34zm1.42 1.06a.25.25 0 0 0-.36 0L5.04 12.68l-.5 1.99 1.99-.5L16.32 4.12a.25.25 0 0 0 0-.36"/>',
+      link: '<path d="M7.2 5.25h-1.7a4.75 4.75 0 0 0 0 9.5h1.7a.75.75 0 0 0 0-1.5H5.5a3.25 3.25 0 0 1 0-6.5h1.7a.75.75 0 0 0 0-1.5m5.6 0h1.7a4.75 4.75 0 0 1 0 9.5h-1.7a.75.75 0 0 1 0-1.5h1.7a3.25 3.25 0 0 0 0-6.5h-1.7a.75.75 0 0 1 0-1.5M6.75 10a.75.75 0 0 1 .75-.75h5a.75.75 0 0 1 0 1.5h-5a.75.75 0 0 1-.75-.75"/>',
+      grid: '<path d="M4 3.25h3A.75.75 0 0 1 7.75 4v3A.75.75 0 0 1 7 7.75H4A.75.75 0 0 1 3.25 7V4A.75.75 0 0 1 4 3.25m.75 1.5v1.5h1.5v-1.5zm8.25-1.5h3a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-.75.75h-3a.75.75 0 0 1-.75-.75V4a.75.75 0 0 1 .75-.75m.75 1.5v1.5h1.5v-1.5zM4 12.25h3a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-.75.75H4a.75.75 0 0 1-.75-.75v-3a.75.75 0 0 1 .75-.75m.75 1.5v1.5h1.5v-1.5zm8.25-1.5h3a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-.75.75h-3a.75.75 0 0 1-.75-.75v-3a.75.75 0 0 1 .75-.75m.75 1.5v1.5h1.5v-1.5z"/>',
       arrowLeft: '<path d="M8.53 3.47a.75.75 0 0 1 0 1.06L3.81 9.25H16a.75.75 0 0 1 0 1.5H3.81l4.72 4.72a.75.75 0 1 1-1.06 1.06l-6-6a.75.75 0 0 1 0-1.06l6-6a.75.75 0 0 1 1.06 0"/>',
       chevronRight: '<path d="M7.3 4.2a.7.7 0 0 1 .98.09l4.39 5.26a.7.7 0 0 1 0 .9l-4.39 5.26a.7.7 0 1 1-1.08-.9L11.22 10 7.2 5.19a.7.7 0 0 1 .1-.99"/>',
       file: '<path d="M6 2.25h5.38c.4 0 .78.16 1.06.44l3.87 3.87c.28.28.44.66.44 1.06V16A1.75 1.75 0 0 1 15 17.75H6A1.75 1.75 0 0 1 4.25 16V4A1.75 1.75 0 0 1 6 2.25m0 1.5a.25.25 0 0 0-.25.25v12c0 .14.11.25.25.25h9a.25.25 0 0 0 .25-.25V8h-3.5A.75.75 0 0 1 11 7.25v-3.5zm6.5 1.06V6.5h1.69z"/>'
@@ -1506,35 +1516,89 @@
     </article>`;
   }
 
-  function settingsHtml(profile) {
+  function settingsProfile() {
+    return state.profiles.find((profile) => profile.id === settingsEditingProfileId) || activeProfile();
+  }
+
+  function profileModelIds(profile) {
+    return availableModels(profile);
+  }
+
+  function parseModelIds(value) {
+    return Array.from(new Set(String(value || '').split(/[\n,]/).map((model) => model.trim()).filter(Boolean)));
+  }
+
+  function setProfileSelectedModels(profile, models) {
+    profile.selectedModels = Array.from(new Set((models || []).filter(Boolean)));
+    if (!profile.selectedModels.includes(profile.model)) profile.model = profile.selectedModels[0] || '';
+  }
+
+  function syncSelectedModelsField(profile) {
+    const field = panel?.querySelector('[data-field="model-ids"]');
+    if (field) field.value = profileModelIds(profile).join('\n');
+  }
+
+  function modelSuggestionRows(profile) {
+    const query = settingsModelSearch.trim().toLowerCase();
+    const selected = new Set(profileModelIds(profile));
+    const models = Array.from(new Set(profile.discoveredModels || [])).filter((model) => !query || model.toLowerCase().includes(query));
+    if (!models.length) return `<div class="empty-models">${profile.discoveredModels?.length ? 'No matching models' : 'Reload models to get suggestions from this endpoint'}</div>`;
+    return models.map((model) => `<label class="model-suggestion"><input type="checkbox" data-model-choice="${escapeHtml(model)}" ${selected.has(model) ? 'checked' : ''}><span>${escapeHtml(model)}</span></label>`).join('');
+  }
+
+  function profileRowsHtml() {
+    return state.profiles.map((profile) => {
+      const models = profileModelIds(profile);
+      const visibleModels = models.slice(0, 3).join(', ');
+      const remaining = Math.max(0, models.length - 3);
+      const apiLabel = profile.apiType === 'responses' ? 'Responses' : 'Chat Completions';
+      const active = profile.id === state.settings.activeProfileId;
+      const check = profileConnectionCheck?.profileId === profile.id ? profileConnectionCheck : null;
+      return `<article class="profile-row ${active ? 'active' : ''} ${check ? `check-${check.status}` : ''}">
+        <label class="profile-choice" title="${active ? 'Active connection' : `Select ${escapeHtml(profile.name)}`}"><input type="checkbox" role="radio" name="byon-active-profile" data-profile-select="${escapeHtml(profile.id)}" ${active ? 'checked' : ''}><span class="profile-radio"></span><span class="profile-mark">${iconSvg('grid')}</span><span class="profile-summary"><span class="profile-name"><strong>${escapeHtml(profile.name)}</strong><span class="model-count">${models.length} model${models.length === 1 ? '' : 's'}</span></span><small>${escapeHtml(apiLabel)} · ${escapeHtml(profile.baseUrl || 'No base URL')}</small><small class="profile-models">${escapeHtml(check?.message || `${visibleModels || 'No models configured'}${remaining ? ` +${remaining}` : ''}`)}</small></span></label>
+        <div class="profile-actions"><button data-action="edit-profile" data-profile-id="${escapeHtml(profile.id)}" aria-label="Edit ${escapeHtml(profile.name)}" title="Edit connection">${iconSvg('pencil')}</button><button class="check-profile-button" data-action="check-profile" data-profile-id="${escapeHtml(profile.id)}" aria-label="Check ${escapeHtml(profile.name)} connection" title="Check connection">${iconSvg('link')}<span>Check</span></button><button data-action="delete-profile" data-profile-id="${escapeHtml(profile.id)}" class="danger-link" ${state.profiles.length === 1 ? 'disabled' : ''} aria-label="Delete ${escapeHtml(profile.name)}" title="Delete connection">${iconSvg('trash')}</button></div>
+      </article>`;
+    }).join('');
+  }
+
+  function notionMcpSettingsHtml() {
     const connection = state.notionMcp;
     const headersText = typeof connection.headers === 'string' ? connection.headers : JSON.stringify(connection.headers || {}, null, 2);
     const connected = connection.authMode === 'none' || Boolean(connection.accessToken);
-    return `<div class="settings-view">
+    return `<section class="settings-card mcp-settings"><div class="settings-section-heading"><div><strong>Notion MCP</strong><span class="mcp-heading-status ${connected ? 'connected' : ''}"><span class="status-dot"></span>${connected ? 'Connected and available globally' : 'Not connected'}</span></div><label class="notion-switch"><input data-field="mcp-enabled" type="checkbox" role="switch" aria-label="Enable Notion MCP" ${connection.enabled ? 'checked' : ''}><span class="switch-track"><span></span></span></label></div>
+      <p class="notice">When a request needs workspace data, BYON gives Notion tools to whichever model is active. Tool calls use the approval mode in the composer.</p>
+      ${connection.authMode === 'oauth' ? `<div class="row"><button data-action="${connected ? 'disconnect-notion' : 'connect-notion'}" class="${connected ? '' : 'primary'}">${connected ? 'Disconnect Notion' : 'Connect Notion'}</button>${connected ? '<button data-action="test-mcp">Test tools</button>' : ''}</div>` : `<div class="row"><button data-action="test-mcp">Test tools</button>${connection.accessToken ? '<button data-action="disconnect-notion">Clear credentials</button>' : ''}</div>`}
+      <details class="mcp-advanced"><summary>Advanced connection</summary><label>MCP HTTP URL<input data-field="mcp-url" value="${escapeHtml(connection.serverUrl)}"></label><label>Authentication<select data-field="mcp-auth-mode"><option value="oauth" ${connection.authMode === 'oauth' ? 'selected' : ''}>OAuth with PKCE</option><option value="bearer" ${connection.authMode === 'bearer' ? 'selected' : ''}>Bearer token</option><option value="none" ${connection.authMode === 'none' ? 'selected' : ''}>No authentication</option></select></label>${connection.authMode === 'bearer' ? `<label>MCP bearer token<input data-field="mcp-access-token" type="password" value="${escapeHtml(connection.accessToken)}" autocomplete="off"></label>` : ''}<label>Additional headers (JSON)<textarea data-field="mcp-headers" rows="3">${escapeHtml(headersText)}</textarea></label><p class="notice">Userscripts cannot launch stdio processes. Use a trusted Streamable HTTP bridge for local stdio servers.</p></details>
+    </section>`;
+  }
+
+  function profileEditorHtml(profile) {
+    const models = profileModelIds(profile);
+    return `<div class="settings-view profile-editor">
+      <div class="settings-title"><button class="icon-button" data-action="back-to-profiles" aria-label="Back to connections">${iconSvg('arrowLeft')}</button><h2>${escapeHtml(profile.name || 'New connection')}</h2></div>
+      <section class="settings-card connection-form">
+        <div class="form-line"><div><strong>Connection</strong><small>OpenAI, Anthropic, or a compatible local endpoint.</small></div><select aria-label="Connection type" disabled><option>Custom</option></select></div>
+        <div class="form-line"><div><strong>API key (optional)</strong><small>${profile.apiKey ? 'A key is saved. Leave blank to keep it.' : 'Leave blank for endpoints without authentication.'}</small></div><div class="field-action"><input data-field="api-key" type="password" value="" placeholder="${profile.apiKey ? 'Leave blank to keep saved key' : 'API key'}" autocomplete="off">${profile.apiKey ? '<button class="text-button" data-action="remove-api-key">Remove saved key</button>' : ''}</div></div>
+        <div class="form-line"><strong>Connection name</strong><input data-field="profile-name" value="${escapeHtml(profile.name)}"></div>
+        <div class="form-line"><div><strong>Base URL</strong><small>OpenAI-compatible endpoint.</small></div><input data-field="base-url" value="${escapeHtml(profile.baseUrl)}" placeholder="https://api.example.com/v1"></div>
+      </section>
+      <section class="settings-card models-card"><div class="settings-section-heading"><div><strong>Models</strong><small data-model-count>${models.length} model${models.length === 1 ? '' : 's'} selected</small></div><button class="text-button" data-action="discover-models">Reload models</button></div><p class="models-help">Select from suggestions below or enter exact model IDs.</p><div class="model-selector"><div class="model-selector-toolbar"><span>${profile.discoveredModels?.length || 0} models</span><label class="model-settings-search">${iconSvg('search')}<input id="settings-model-search" value="${escapeHtml(settingsModelSearch)}" placeholder="Search" autocomplete="off"></label><button class="text-button" data-action="select-all-models">Select all</button><button class="text-button" data-action="clear-models">Clear</button></div><div class="model-suggestions">${modelSuggestionRows(profile)}</div></div><label>Model IDs (one per line or comma-separated)<textarea data-field="model-ids" rows="4">${escapeHtml(models.join('\n'))}</textarea></label></section>
+      <details class="settings-card provider-advanced"><summary>Advanced provider settings</summary><div class="grid-two"><label>API type<select data-field="api-type"><option value="chat_completions" ${profile.apiType === 'chat_completions' ? 'selected' : ''}>Chat Completions</option><option value="responses" ${profile.apiType === 'responses' ? 'selected' : ''}>Responses</option></select></label><label>Authentication<select data-field="auth-mode"><option value="bearer" ${profile.authMode === 'bearer' ? 'selected' : ''}>Authorization: Bearer</option><option value="custom" ${profile.authMode === 'custom' ? 'selected' : ''}>Custom header</option><option value="none" ${profile.authMode === 'none' ? 'selected' : ''}>No authentication</option></select></label></div>${profile.authMode === 'custom' ? `<div class="grid-two"><label>Header name<input data-field="header-name" value="${escapeHtml(profile.headerName)}"></label><label>Value prefix<input data-field="header-prefix" value="${escapeHtml(profile.headerPrefix)}" placeholder="Optional"></label></div>` : ''}<label>System prompt<textarea data-field="system-prompt" rows="4">${escapeHtml(profile.systemPrompt)}</textarea></label></details>
+      <div class="row end"><button data-action="test-connection">Test connection</button><button class="primary" data-action="save-profile">Save connection</button></div><div id="settings-status" class="status" role="status"></div>
+    </div>`;
+  }
+
+  function settingsHtml() {
+    const editingProfile = state.profiles.find((profile) => profile.id === settingsEditingProfileId);
+    if (editingProfile) return profileEditorHtml(editingProfile);
+    return `<div class="settings-view profiles-settings">
       <div class="settings-title"><button class="icon-button" data-action="close-settings" aria-label="Back to chat">${iconSvg('arrowLeft')}</button><h2>BYON settings</h2></div>
       <p class="notice">API keys are masked here but stored unencrypted in your userscript manager. Requests are sent without Notion cookies.</p>
-      <label>Profile<select data-field="active-profile">${profileOptions()}</select></label>
-      <div class="row"><button data-action="new-profile">New profile</button><button data-action="delete-profile" class="danger" ${state.profiles.length === 1 ? 'disabled' : ''}>Delete profile</button></div>
-      <label>Name<input data-field="profile-name" value="${escapeHtml(profile.name)}"></label>
-      <label>Base URL<input data-field="base-url" value="${escapeHtml(profile.baseUrl)}" placeholder="https://api.example.com/v1"></label>
-      <div class="grid-two">
-        <label>API type<select data-field="api-type"><option value="chat_completions" ${profile.apiType === 'chat_completions' ? 'selected' : ''}>Chat Completions</option><option value="responses" ${profile.apiType === 'responses' ? 'selected' : ''}>Responses</option></select></label>
-        <label>Model<input data-field="model" value="${escapeHtml(profile.model)}" list="byon-models" placeholder="model-id"><datalist id="byon-models"></datalist></label>
-      </div>
-      <button data-action="discover-models">Discover models</button>
-      <label>Authentication<select data-field="auth-mode"><option value="bearer" ${profile.authMode === 'bearer' ? 'selected' : ''}>Authorization: Bearer</option><option value="custom" ${profile.authMode === 'custom' ? 'selected' : ''}>Custom header</option><option value="none" ${profile.authMode === 'none' ? 'selected' : ''}>No authentication</option></select></label>
-      ${profile.authMode === 'custom' ? `<div class="grid-two"><label>Header name<input data-field="header-name" value="${escapeHtml(profile.headerName)}"></label><label>Value prefix<input data-field="header-prefix" value="${escapeHtml(profile.headerPrefix)}" placeholder="Optional"></label></div>` : ''}
-      ${profile.authMode !== 'none' ? `<label>API key<input data-field="api-key" type="password" value="${escapeHtml(profile.apiKey)}" autocomplete="off"></label>` : ''}
-      <label>System prompt<textarea data-field="system-prompt" rows="4">${escapeHtml(profile.systemPrompt)}</textarea></label>
-      <fieldset><legend>Notion MCP</legend>
-        <label class="checkbox"><input data-field="mcp-enabled" type="checkbox" ${profile.mcpEnabled ? 'checked' : ''}> Let this profile use Notion tools</label>
-        <p class="notice">BYON connects to Notion MCP itself and gives its tools to your model as standard function calls. Tool calls follow the approval mode selected in the chat composer. Your model endpoint must support function calling.</p>
-        <div class="connection-status ${connected ? 'connected' : ''}"><span class="status-dot"></span><span>${connected ? `Ready${connection.connectedAt ? ` · connected ${escapeHtml(new Date(connection.connectedAt).toLocaleDateString())}` : ''}` : 'Not connected'}</span></div>
-        ${connection.authMode === 'oauth' ? `<div class="row"><button data-action="${connected ? 'disconnect-notion' : 'connect-notion'}" class="${connected ? '' : 'primary'}">${connected ? 'Disconnect Notion' : 'Connect Notion'}</button>${connected ? '<button data-action="test-mcp">Test tools</button>' : ''}</div>` : `<div class="row"><button data-action="test-mcp">Test tools</button>${connection.accessToken ? '<button data-action="disconnect-notion">Clear credentials</button>' : ''}</div>`}
-        <details><summary>Advanced connection</summary><label>MCP HTTP URL<input data-field="mcp-url" value="${escapeHtml(connection.serverUrl)}"></label><label>Authentication<select data-field="mcp-auth-mode"><option value="oauth" ${connection.authMode === 'oauth' ? 'selected' : ''}>OAuth with PKCE</option><option value="bearer" ${connection.authMode === 'bearer' ? 'selected' : ''}>Bearer token</option><option value="none" ${connection.authMode === 'none' ? 'selected' : ''}>No authentication</option></select></label>${connection.authMode === 'bearer' ? `<label>MCP bearer token<input data-field="mcp-access-token" type="password" value="${escapeHtml(connection.accessToken)}" autocomplete="off"></label>` : ''}<label>Additional headers (JSON)<textarea data-field="mcp-headers" rows="3">${escapeHtml(headersText)}</textarea></label><p class="notice">Userscripts cannot launch stdio processes. For a local stdio MCP server, run an HTTP bridge and enter its Streamable HTTP URL here.</p></details>
-      </fieldset>
+      <div class="settings-section-heading connections-heading"><div><strong>Connections</strong><small>Choose which provider and model BYON uses.</small></div><button data-action="new-profile">${iconSvg('plus')}<span>Add</span></button></div>
+      <section class="profile-list">${profileRowsHtml()}</section>
+      ${notionMcpSettingsHtml()}
       <label class="checkbox"><input data-field="replacement-enabled" type="checkbox" ${state.settings.replacementEnabled ? 'checked' : ''}> Replace Notion’s Ask AI button with Ask BYON</label>
-      <div class="row"><button class="primary" data-action="save-settings">Save settings</button><button data-action="test-connection">Test connection</button></div>
+      <div class="row end"><button class="primary" data-action="save-settings">Save settings</button></div>
       <div id="settings-status" class="status" role="status"></div>
     </div>`;
   }
@@ -1648,8 +1712,8 @@
       const action = button.dataset.action;
       if (action === 'close-panel') closePanel();
       if (action === 'toggle-view-mode') setViewMode(viewMode === 'full' ? 'side' : 'full');
-      if (action === 'open-settings') { settingsOpen = true; historyOpen = plusOpen = modelOpen = modeOpen = approvalModeOpen = false; render(); }
-      if (action === 'close-settings') { settingsOpen = false; render(); }
+      if (action === 'open-settings') { settingsOpen = true; settingsEditingProfileId = null; historyOpen = plusOpen = modelOpen = modeOpen = approvalModeOpen = false; render(); }
+      if (action === 'close-settings') { settingsOpen = false; settingsEditingProfileId = null; render(); }
       if (action === 'toggle-history') { historyOpen = !historyOpen; plusOpen = modelOpen = modeOpen = approvalModeOpen = false; render(); }
       if (action === 'toggle-plus') { plusOpen = !plusOpen; historyOpen = modelOpen = modeOpen = approvalModeOpen = false; render(); }
       if (action === 'toggle-models') { modelOpen = !modelOpen; historyOpen = plusOpen = modeOpen = approvalModeOpen = false; render(); }
@@ -1662,10 +1726,17 @@
       if (action === 'stop-request') stopRequest();
       if (action === 'clear-history') clearHistory();
       if (action === 'new-profile') addProfile();
-      if (action === 'delete-profile') deleteProfile();
+      if (action === 'edit-profile') { settingsEditingProfileId = button.dataset.profileId; settingsModelSearch = ''; settingsScrollTop = 0; render(); }
+      if (action === 'back-to-profiles') { collectSettingsForm(); settingsEditingProfileId = null; settingsScrollTop = 0; persist(); render(); }
+      if (action === 'check-profile') checkProfileConnection(button.dataset.profileId);
+      if (action === 'delete-profile') deleteProfile(button.dataset.profileId);
+      if (action === 'remove-api-key') { settingsProfile().apiKey = ''; render(); announce('Saved API key removed'); }
       if (action === 'save-settings') saveSettingsForm();
+      if (action === 'save-profile') saveSettingsForm();
       if (action === 'test-connection') testConnection();
       if (action === 'discover-models') discoverModels();
+      if (action === 'select-all-models') { collectSettingsForm(); const profile = settingsProfile(); setProfileSelectedModels(profile, profile.discoveredModels || []); syncSelectedModelsField(profile); render(); }
+      if (action === 'clear-models') { collectSettingsForm(); const profile = settingsProfile(); setProfileSelectedModels(profile, []); syncSelectedModelsField(profile); render(); }
       if (action === 'connect-notion') connectNotion();
       if (action === 'disconnect-notion') disconnectNotion();
       if (action === 'test-mcp') testMcpConnection();
@@ -1682,12 +1753,22 @@
       if (button.dataset.editMessage != null) editMessage(Number(button.dataset.editMessage));
     };
     panel.onchange = (event) => {
-      if (event.target.dataset.field === 'active-profile') {
-        state.settings.activeProfileId = event.target.value;
-        persist(); render();
+      if (event.target.dataset.profileSelect) {
+        state.settings.activeProfileId = event.target.dataset.profileSelect;
+        persist(); render(); announce('Active connection changed');
       }
-      if (event.target.dataset.field === 'auth-mode') { activeProfile().authMode = event.target.value; collectSettingsForm(); render(); }
+      if (event.target.dataset.field === 'auth-mode') { settingsProfile().authMode = event.target.value; collectSettingsForm(); render(); }
       if (event.target.dataset.field === 'mcp-auth-mode') { state.notionMcp.authMode = event.target.value; collectSettingsForm(); render(); }
+      if (event.target.dataset.modelChoice) {
+        collectSettingsForm();
+        const profile = settingsProfile();
+        const selected = new Set(profile.selectedModels || []);
+        if (event.target.checked) selected.add(event.target.dataset.modelChoice);
+        else selected.delete(event.target.dataset.modelChoice);
+        setProfileSelectedModels(profile, [...selected]);
+        syncSelectedModelsField(profile);
+        render();
+      }
       if (event.target.id === 'quick-model') { activeProfile().model = event.target.value; persist(); announce(`Model changed to ${event.target.value}`); }
       if (event.target.id === 'file-picker') readSelectedFiles(event.target.files);
     };
@@ -1705,6 +1786,18 @@
         modelSearch = event.target.value;
         const rows = event.target.closest('.model-popover')?.querySelector('.popover-scroll');
         if (rows) rows.innerHTML = groupedModelRows(activeProfile());
+      }
+      if (event.target.id === 'settings-model-search') {
+        settingsModelSearch = event.target.value;
+        const rows = event.target.closest('.model-selector')?.querySelector('.model-suggestions');
+        if (rows) rows.innerHTML = modelSuggestionRows(settingsProfile());
+      }
+      if (event.target.dataset.field === 'model-ids') {
+        const profile = settingsProfile();
+        setProfileSelectedModels(profile, parseModelIds(event.target.value));
+        const count = panel.querySelector('[data-model-count]');
+        if (count) count.textContent = `${profile.selectedModels.length} model${profile.selectedModels.length === 1 ? '' : 's'} selected`;
+        for (const checkbox of panel.querySelectorAll('[data-model-choice]')) checkbox.checked = profile.selectedModels.includes(checkbox.dataset.modelChoice);
       }
     };
     const handle = panel.querySelector('.resize-handle');
@@ -1732,19 +1825,20 @@
   }
 
   function collectSettingsForm() {
-    const profile = activeProfile();
+    const profile = settingsProfile();
     const value = (name) => panel.querySelector(`[data-field="${name}"]`)?.value;
     if (value('profile-name') != null) profile.name = value('profile-name').trim() || 'Unnamed profile';
     if (value('base-url') != null) profile.baseUrl = value('base-url').trim();
     if (value('api-type') != null) profile.apiType = value('api-type');
     if (value('model') != null) profile.model = value('model').trim();
+    if (value('model-ids') != null) setProfileSelectedModels(profile, parseModelIds(value('model-ids')));
     if (value('auth-mode') != null) profile.authMode = value('auth-mode');
-    if (value('api-key') != null) profile.apiKey = value('api-key');
+    if (value('api-key')) profile.apiKey = value('api-key');
     if (value('header-name') != null) profile.headerName = value('header-name').trim();
     if (value('header-prefix') != null) profile.headerPrefix = value('header-prefix');
     if (value('system-prompt') != null) profile.systemPrompt = value('system-prompt');
     const mcpEnabled = panel.querySelector('[data-field="mcp-enabled"]');
-    if (mcpEnabled) profile.mcpEnabled = mcpEnabled.checked;
+    if (mcpEnabled) state.notionMcp.enabled = mcpEnabled.checked;
     if (value('mcp-url') != null) state.notionMcp.serverUrl = value('mcp-url').trim();
     if (value('mcp-auth-mode') != null) state.notionMcp.authMode = value('mcp-auth-mode');
     if (value('mcp-access-token') != null) state.notionMcp.accessToken = value('mcp-access-token');
@@ -1757,12 +1851,14 @@
     const status = panel.querySelector('#settings-status');
     try {
       collectSettingsForm();
-      const profile = activeProfile();
-      endpointFor(profile, 'chat');
-      authHeaders(profile);
-      if (!profile.model) throw new Error('Enter a model ID.');
+      const profile = settingsProfile();
+      if (settingsEditingProfileId) {
+        endpointFor(profile, 'chat');
+        authHeaders(profile);
+        if (!profile.model) throw new Error('Enter a model ID.');
+      }
       state.notionMcp.headers = parseHeaderObject(state.notionMcp.headers);
-      if (profile.mcpEnabled && state.notionMcp.authMode !== 'none' && !state.notionMcp.accessToken) throw new Error('Connect Notion or enter MCP credentials before enabling Notion tools for this profile.');
+      if (state.notionMcp.enabled && state.notionMcp.authMode !== 'none' && !state.notionMcp.accessToken) throw new Error('Connect Notion or enter MCP credentials before enabling Notion tools.');
       await persist();
       applyTriggerReplacement();
       status.textContent = 'Settings saved.';
@@ -1840,9 +1936,8 @@
   async function disconnectNotion() {
     const connection = state.notionMcp;
     Object.assign(connection, {
-      accessToken: '', refreshToken: '', expiresAt: 0, pendingOAuth: null, connectedAt: ''
+      enabled: false, accessToken: '', refreshToken: '', expiresAt: 0, pendingOAuth: null, connectedAt: ''
     });
-    for (const profile of state.profiles) profile.mcpEnabled = false;
     await persist();
     render();
     announce('Notion disconnected');
@@ -1865,16 +1960,22 @@
   function addProfile() {
     collectSettingsForm();
     const profile = defaultProfile();
-    profile.name = `Profile ${state.profiles.length + 1}`;
+    profile.name = `Connection ${state.profiles.length + 1}`;
     state.profiles.push(profile);
     state.settings.activeProfileId = profile.id;
+    settingsEditingProfileId = profile.id;
+    settingsModelSearch = '';
+    settingsScrollTop = 0;
     persist(); render();
   }
 
-  function deleteProfile() {
+  function deleteProfile(profileId = state.settings.activeProfileId) {
     if (state.profiles.length === 1) return;
-    state.profiles = state.profiles.filter((profile) => profile.id !== state.settings.activeProfileId);
-    state.settings.activeProfileId = state.profiles[0].id;
+    const profile = state.profiles.find((candidate) => candidate.id === profileId);
+    if (!profile || !global.confirm(`Delete “${profile.name}” connection?`)) return;
+    state.profiles = state.profiles.filter((profile) => profile.id !== profileId);
+    if (state.settings.activeProfileId === profileId) state.settings.activeProfileId = state.profiles[0].id;
+    if (settingsEditingProfileId === profileId) settingsEditingProfileId = null;
     persist(); render();
   }
 
@@ -1936,7 +2037,7 @@
 
   async function performCompletion(chat, assistant, context, allowMcp = true) {
     const profile = activeProfile();
-    if (profile.mcpEnabled && allowMcp) {
+    if (state.notionMcp.enabled && allowMcp) {
       mcpOperationActive = true;
       assistant.content = 'Deciding whether Notion is needed…';
       renderConversationUpdate();
@@ -2103,8 +2204,8 @@
         round += 1;
         renderConversationUpdate();
         const body = profile.apiType === 'responses'
-          ? buildResponsesBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined })
-          : buildChatCompletionsBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined });
+          ? buildResponsesBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined, includeMcpInstruction: true })
+          : buildChatCompletionsBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined, includeMcpInstruction: true });
         let payload;
         try { payload = await requestProviderPayload(profile, body); }
         catch (error) {
@@ -2114,8 +2215,8 @@
           toolsByWireName = new Map(definitions.map((definition) => [definition.wireName, definition]));
           modelTools = [...definitions.map((definition) => definition.modelTool), completionFunctionDefinition(profile.apiType)];
           const fallbackBody = profile.apiType === 'responses'
-            ? buildResponsesBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined })
-            : buildChatCompletionsBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined });
+            ? buildResponsesBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined, includeMcpInstruction: true })
+            : buildChatCompletionsBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined, includeMcpInstruction: true });
           payload = await requestProviderPayload(profile, fallbackBody);
         }
         requireToolCall = false;
@@ -2390,12 +2491,12 @@
     try {
       collectSettingsForm();
       status.textContent = 'Discovering models…';
-      const response = await connectionRequest(activeProfile(), 'models');
+      const response = await connectionRequest(settingsProfile(), 'models');
       const payload = JSON.parse(response.responseText);
       const records = Array.isArray(payload.data) ? payload.data : Array.isArray(payload.models) ? payload.models : [];
       const models = records.map((model) => typeof model === 'string' ? model : model.id || model.name).filter(Boolean).sort();
       if (!models.length) throw new Error('The endpoint returned no model IDs. You can still enter one manually.');
-      const profile = activeProfile();
+      const profile = settingsProfile();
       profile.discoveredModels = models;
       profile.modelMetadata = {};
       for (const record of records) {
@@ -2405,11 +2506,12 @@
         if (id && contextTokens) profile.modelMetadata[id] = { contextTokens };
       }
       await persist();
-      const datalist = panel.querySelector('#byon-models');
-      datalist.innerHTML = models.map((model) => `<option value="${escapeHtml(model)}"></option>`).join('');
       const contexts = Object.keys(profile.modelMetadata).length;
-      status.textContent = `Found ${models.length} models${contexts ? ` and context limits for ${contexts}` : ''}. Choose one from the Model field.`;
-    } catch (error) { status.textContent = redactSecret(error.message, secretsForProfile(activeProfile())); }
+      settingsModelSearch = '';
+      render();
+      const updatedStatus = panel.querySelector('#settings-status');
+      if (updatedStatus) updatedStatus.textContent = `Found ${models.length} models${contexts ? ` and context limits for ${contexts}` : ''}. Select the models you want to use.`;
+    } catch (error) { status.textContent = redactSecret(error.message, secretsForProfile(settingsProfile())); }
   }
 
   async function testConnection() {
@@ -2417,9 +2519,26 @@
     try {
       collectSettingsForm();
       status.textContent = 'Testing connection…';
-      await connectionRequest(activeProfile(), 'models');
+      await connectionRequest(settingsProfile(), 'models');
       status.textContent = 'Connection succeeded.';
-    } catch (error) { status.textContent = redactSecret(error.message, secretsForProfile(activeProfile())); }
+    } catch (error) { status.textContent = redactSecret(error.message, secretsForProfile(settingsProfile())); }
+  }
+
+  async function checkProfileConnection(profileId) {
+    const profile = state.profiles.find((candidate) => candidate.id === profileId);
+    if (!profile) return;
+    profileConnectionCheck = { profileId, status: 'running', message: 'Checking connection…' };
+    render();
+    try {
+      await connectionRequest(profile, 'models');
+      profileConnectionCheck = { profileId, status: 'success', message: 'Connection successful' };
+      announce(`${profile.name} connection succeeded`);
+    } catch (error) {
+      const message = redactSecret(error.message, secretsForProfile(profile));
+      profileConnectionCheck = { profileId, status: 'failed', message: `Connection failed · ${message}` };
+      announce(`${profile.name} connection failed`);
+    }
+    render();
   }
 
   function closestClickable(element) {
@@ -2624,9 +2743,12 @@
     .approval-mode-button{display:flex;align-items:center;gap:4px;max-width:148px;height:28px;padding:4px 7px;border-radius:7px;background:transparent;color:var(--c-texSec,var(--muted));white-space:nowrap}.approval-mode-button:hover{background:var(--ca-bacIntTra,var(--faint));filter:none}.approval-mode-button>.ui-icon{width:17px;height:17px}.approval-mode-button>span{overflow:hidden;text-overflow:ellipsis;font-size:12px}.approval-mode-button .chevron-icon{width:12px;height:12px}.approval-mode-popover{bottom:64px;inset-inline-start:16px;width:min(360px,calc(100% - 32px))}.approval-mode-popover .mode-row{align-items:flex-start;min-height:52px}.approval-mode-popover .menu-icon{padding-top:2px}.approval-mode-popover .menu-icon .ui-icon{width:19px;height:19px}
     .side-panel .approval-mode-button{width:28px;padding:4px 5px}.side-panel .approval-mode-button>span,.side-panel .approval-mode-button>.chevron-icon{display:none}
     .tool-activity{margin:5px 0 10px;padding:9px 10px;border-radius:9px;background:var(--ca-bacSecTra,var(--faint));box-shadow:inset 0 0 0 1px var(--ca-borPriTra,var(--border));font-size:12px}.tool-activity-heading{display:flex;align-items:center;gap:7px;min-height:20px}.tool-activity-heading strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}.tool-status-dot{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:var(--c-yelBacAccPri,#d8a32f)}.tool-activity.running .tool-status-dot{background:var(--c-bluBacAccPri,#2383e2);animation:byon-tool-pulse 1.1s ease-in-out infinite}.tool-activity.completed .tool-status-dot{background:var(--c-greBacAccPri,#46a171)}.tool-activity.denied .tool-status-dot,.tool-activity.failed .tool-status-dot{background:var(--c-redBacAccPri,#e03e3e)}.tool-status-label{margin-inline-start:auto;color:var(--c-texTer,var(--muted));white-space:nowrap}.tool-activity details{margin:5px 0 0}.tool-activity summary{width:fit-content;cursor:pointer;color:var(--c-texTer,var(--muted));user-select:none}.tool-activity pre{max-height:180px;margin:7px 0 0;padding:8px;overflow:auto;border-radius:6px;background:var(--c-bacPri,var(--panel));font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.tool-approval-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.tool-approval-actions button{min-height:28px;border-radius:6px;padding:4px 9px}.tool-allow{background:var(--c-greBacAccPri,#46a171);color:var(--c-texInvPri,#fff)}.tool-always{background:var(--ca-bacIntTra,var(--faint));color:var(--c-texPri,var(--text));box-shadow:inset 0 0 0 1px var(--ca-borPriTra,var(--border))}.tool-deny{background:var(--c-redBacAccPri,#e03e3e);color:var(--c-texInvPri,#fff)}.tool-error{margin-top:7px;color:var(--c-redTexPri,#e03e3e)}@keyframes byon-tool-pulse{50%{opacity:.35}}
-    .chat-shell{position:relative;display:flex;flex:1 1 auto;min-width:0;height:100%;flex-direction:column;overflow:hidden}.full-page{position:absolute;inset:0;width:auto;max-width:none;border:0;box-shadow:none;animation:byon-panel-in 180ms cubic-bezier(.2,.8,.2,1);flex-direction:row}.full-page .resize-handle{display:none}.full-page .panel-header{padding-inline:12px 16px}.full-page .chat-title-button{max-width:min(50%,420px)}.full-page .messages{width:100%;padding:16px 48px 132px;scrollbar-gutter:stable}.full-page .message-column{width:100%;max-width:798px;margin:0 auto}.full-page.has-chat .composer-area{position:absolute;inset-inline:0;bottom:0;width:min(710px,calc(100% - 64px));margin:0 auto;padding:8px 0 16px;background:linear-gradient(transparent 0,var(--c-bacPri,var(--panel)) 20%)}.full-page.start-chat .messages{overflow:hidden;padding:0 48px;display:flex;align-items:stretch}.full-page.start-chat .message-column{max-width:710px;display:flex;flex:1}.full-page.start-chat .landing{width:100%;min-height:0;justify-content:flex-end;padding-bottom:24px}.full-page.start-chat .landing-icon{width:64px;height:64px}.full-page.start-chat .landing h1{font-size:20px;line-height:26px;margin-top:16px}.full-page.start-chat .composer-area{width:min(710px,calc(100% - 96px));margin:0 auto;padding:0 0 15vh;background:var(--c-bacPri,var(--panel))}.full-page .composer-wrap textarea{min-height:68px;padding:16px 16px 2px 18px}.full-page .composer-toolbar{height:40px;padding:6px 10px}.full-page .attachment-row{padding:10px 12px 0}.full-page .plus-popover,.full-page .model-popover,.full-page .mode-popover,.full-page .approval-mode-popover{bottom:calc(15vh + 62px)}.full-page.has-chat .plus-popover,.full-page.has-chat .model-popover,.full-page.has-chat .mode-popover,.full-page.has-chat .approval-mode-popover{bottom:78px}.full-settings-sidebar{position:relative;z-index:6;flex:0 0 min(390px,38vw);width:min(390px,38vw);height:100%;overflow:hidden;background:var(--c-bacPri,var(--panel));border-inline-start:1px solid var(--c-borSec,var(--border));box-shadow:var(--c-shaOutSm,-1px 0 3px rgba(0,0,0,.05));animation:byon-panel-in 180ms cubic-bezier(.2,.8,.2,1)}.full-settings-sidebar .settings-view{padding:12px 18px 24px}.full-page.showing-settings{overflow:hidden}
+    .chat-shell{position:relative;display:flex;flex:1 1 auto;min-width:0;height:100%;flex-direction:column;overflow:hidden}.full-page{position:absolute;inset:0;width:auto;max-width:none;border:0;box-shadow:none;animation:byon-panel-in 180ms cubic-bezier(.2,.8,.2,1);flex-direction:row}.full-page .resize-handle{display:none}.full-page .panel-header{padding-inline:12px 16px}.full-page .chat-title-button{max-width:min(50%,420px)}.full-page .messages{width:100%;padding:16px 48px 132px;scrollbar-gutter:stable}.full-page .message-column{width:100%;max-width:798px;margin:0 auto}.full-page.has-chat .composer-area{position:absolute;inset-inline:0;bottom:0;width:min(710px,calc(100% - 64px));margin:0 auto;padding:8px 0 16px;background:linear-gradient(transparent 0,var(--c-bacPri,var(--panel)) 20%)}.full-page.start-chat .messages{overflow:hidden;padding:0 48px;display:flex;align-items:stretch}.full-page.start-chat .message-column{max-width:710px;display:flex;flex:1}.full-page.start-chat .landing{width:100%;min-height:0;justify-content:flex-end;padding-bottom:24px}.full-page.start-chat .landing-icon{width:64px;height:64px}.full-page.start-chat .landing h1{font-size:20px;line-height:26px;margin-top:16px}.full-page.start-chat .composer-area{width:min(710px,calc(100% - 96px));margin:0 auto;padding:0 0 15vh;background:var(--c-bacPri,var(--panel))}.full-page .composer-wrap textarea{min-height:68px;padding:16px 16px 2px 18px}.full-page .composer-toolbar{height:40px;padding:6px 10px}.full-page .attachment-row{padding:10px 12px 0}.full-page .plus-popover,.full-page .model-popover,.full-page .mode-popover,.full-page .approval-mode-popover{bottom:calc(15vh + 62px)}.full-page.has-chat .plus-popover,.full-page.has-chat .model-popover,.full-page.has-chat .mode-popover,.full-page.has-chat .approval-mode-popover{bottom:78px}.full-settings-sidebar{position:relative;z-index:6;flex:0 1 clamp(390px,38vw,640px);width:clamp(390px,38vw,640px);max-width:46vw;height:100%;overflow:hidden;background:var(--c-bacPri,var(--panel));border-inline-start:1px solid var(--c-borSec,var(--border));box-shadow:var(--c-shaOutSm,-1px 0 3px rgba(0,0,0,.05));animation:byon-panel-in 180ms cubic-bezier(.2,.8,.2,1)}.full-settings-sidebar .settings-view{padding:12px 18px 24px}.full-page.showing-settings{overflow:hidden}
     .settings-shell{display:flex;min-height:0;height:100%;overflow:hidden}.settings-shell .settings-view{min-height:0;overscroll-behavior:contain}.full-page{pointer-events:none;background:transparent}.full-page .chat-shell{pointer-events:none;background:transparent}.full-page .messages,.full-page .composer-area,.full-page .full-settings-sidebar,.full-page .notion-popover{pointer-events:auto}.full-page .messages{background:var(--c-bacPri,var(--panel))}.full-page .panel-header{padding-inline:52px 16px;pointer-events:none;background:transparent}.full-page .panel-header button{pointer-events:auto}.full-settings-sidebar{animation:none}
+    .settings-view{width:100%;max-width:none}.settings-section-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:20px 0 9px}.settings-section-heading>div{display:flex;min-width:0;flex-direction:column;gap:2px}.settings-section-heading strong{font-size:14px;line-height:20px;font-weight:500}.settings-section-heading small,.form-line small{color:var(--c-texSec,var(--muted));font-size:13px;line-height:18px}.connections-heading button{display:flex;align-items:center;gap:3px;background:transparent;color:var(--c-texSec,var(--muted))}.connections-heading button .ui-icon{width:16px;height:16px}.profile-list{display:flex;width:100%;flex-direction:column;gap:10px}.settings-card,.profile-row{overflow:hidden;border:1px solid var(--ca-borPriTra,var(--border));border-radius:8px;background:var(--c-bacPri,var(--panel));box-shadow:var(--c-shaBasSm,0 1px 2px rgba(0,0,0,.06))}.profile-row{display:flex;width:100%;min-height:82px;align-items:center;gap:8px;padding:12px 10px;transition:background 120ms ease,border-color 120ms ease,box-shadow 120ms ease}.profile-row:hover{background:var(--ca-bacIntTra,var(--faint));box-shadow:var(--c-shaOutSm,0 2px 5px rgba(0,0,0,.09))}.profile-row.active{border-color:var(--c-bluBorAccSec,var(--c-bluBorAccPri,#2383e2));background:var(--ca-bluBacAccTra,rgba(35,131,226,.06))}.profile-choice{display:flex!important;min-width:0;flex:1;align-items:center;gap:9px!important;margin:0!important;cursor:pointer}.profile-choice>input{position:absolute;width:1px!important;height:1px!important;min-height:0!important;opacity:0;pointer-events:none}.profile-radio{display:grid;width:16px;height:16px;flex:0 0 16px;place-items:center;border:1px solid var(--c-borPri,var(--border));border-radius:50%;background:var(--c-bacPri,var(--panel))}.profile-choice>input:checked+.profile-radio{border:5px solid var(--c-bluBacAccPri,#2383e2)}.profile-choice>input:focus-visible+.profile-radio{outline:2px solid var(--c-bluBorAccSec,rgba(35,131,226,.35));outline-offset:2px}.profile-mark{display:grid;place-items:center;width:32px;height:32px;flex:0 0 32px;border-radius:8px;border:1px solid var(--ca-borPriTra,var(--border));background:var(--c-bacPri,var(--panel));color:var(--c-icoSec,var(--muted));box-shadow:var(--c-shaBasSm,0 1px 2px rgba(0,0,0,.05))}.profile-mark .ui-icon{width:18px;height:18px}.profile-summary{display:flex;min-width:0;flex:1;flex-direction:column}.profile-name{display:flex;align-items:center;gap:7px;min-width:0}.profile-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px}.model-count{flex:0 0 auto;border-radius:5px;padding:1px 5px;background:var(--c-greBacAccSec,rgba(15,157,88,.1));color:var(--c-greTexPri,#0f7b4d);font-size:10px;line-height:16px}.profile-summary small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--c-texSec,var(--muted));font-size:12px;line-height:18px}.profile-models{color:var(--c-texTer,var(--muted))!important}.check-success .profile-models{color:var(--c-greTexPri,#0f7b4d)!important}.check-failed .profile-models{color:var(--c-redTexPri,#e03e3e)!important}.profile-actions{display:flex;align-items:center;gap:2px}.profile-actions button{display:flex;align-items:center;justify-content:center;min-width:28px;width:28px;height:28px;padding:0;background:transparent;color:var(--c-icoSec,var(--muted));box-shadow:none}.profile-actions button:hover{background:var(--ca-bacIntTra,var(--faint));filter:none}.profile-actions .ui-icon{width:17px;height:17px}.profile-actions .check-profile-button{width:auto;padding:0 7px;gap:4px;font-size:12px}.profile-actions .check-profile-button .ui-icon{width:15px;height:15px}.danger-link{color:var(--c-icoSec,var(--muted))}.danger-link:hover,.profile-actions .danger-link:hover{color:var(--c-redIcoPri,var(--c-redTexPri,#e03e3e));background:var(--ca-redBacIntTra,rgba(224,62,62,.1))!important}.settings-card{width:100%;margin:12px 0;padding:14px}.mcp-settings .settings-section-heading,.models-card .settings-section-heading{margin:0 0 10px}.mcp-heading-status{display:flex;align-items:center;gap:6px;color:var(--c-texSec,var(--muted));font-size:12px;line-height:18px}.mcp-heading-status.connected{color:var(--c-greTexPri,#0f7b4d)}.notion-switch{position:relative;display:block!important;margin:0!important;cursor:pointer}.notion-switch>input{position:absolute;width:1px!important;height:1px!important;min-height:0!important;opacity:0}.switch-track{display:flex;width:30px;height:18px;padding:2px;border-radius:44px;background:var(--c-bacTer,#d3d1cb);transition:background 160ms ease,box-shadow 160ms ease}.switch-track>span{display:block;width:14px;height:14px;border-radius:50%;background:white;box-shadow:0 1px 2px rgba(0,0,0,.22);transition:transform 160ms ease}.notion-switch>input:checked+.switch-track{background:var(--c-bluBacAccPri,#2383e2)}.notion-switch>input:checked+.switch-track>span{transform:translateX(12px)}.notion-switch>input:focus-visible+.switch-track{box-shadow:0 0 0 2px var(--c-bluBorAccSec,rgba(35,131,226,.35))}.mcp-settings .notice{margin:7px 0 11px}.text-button{min-height:24px!important;padding:2px 4px!important;background:transparent!important;color:var(--c-texSec,var(--muted));font-size:12px;box-shadow:none!important}.text-button:hover{color:var(--c-texPri,var(--text));background:var(--ca-bacIntTra,var(--faint))!important}.connection-form{padding:0}.form-line{display:grid;width:100%;grid-template-columns:minmax(140px,38%) minmax(0,1fr);align-items:center;gap:18px;min-height:64px;padding:11px 14px}.form-line+.form-line{border-top:1px solid var(--c-borSec,var(--border))}.form-line>div:first-child{display:flex;flex-direction:column}.form-line>input,.form-line>select,.form-line>.field-action{width:100%;min-width:0}.field-action{display:flex;flex-direction:column;align-items:flex-start}.field-action input{width:100%}.field-action .text-button{margin-top:3px}.models-help{margin:0 0 10px;color:var(--c-texSec,var(--muted));font-size:13px;line-height:18px}.model-selector{overflow:hidden;border:1px solid var(--ca-borPriTra,var(--border));border-radius:8px;background:var(--c-bacPri,var(--panel))}.model-selector-toolbar{display:grid;grid-template-columns:auto minmax(120px,1fr) auto auto;align-items:center;gap:10px;padding:8px 10px;color:var(--c-texSec,var(--muted));font-size:12px}.model-settings-search{display:flex!important;height:32px;flex-direction:row!important;align-items:center;gap:6px!important;margin:0!important;padding:0 10px;border:1px solid var(--ca-borPriTra,var(--border));border-radius:999px;background:var(--c-bacPri,var(--panel));box-shadow:var(--c-shaBasSm,0 1px 2px rgba(0,0,0,.04))}.model-settings-search:focus-within{border-color:var(--c-bluBorAccPri,#2383e2);box-shadow:0 0 0 1px var(--c-bluBorAccPri,#2383e2)}.model-settings-search .ui-icon{width:16px;height:16px}.model-settings-search input{height:28px!important;min-height:0!important;padding:0!important;border:0!important;background:transparent!important;box-shadow:none!important}.model-suggestions{max-height:220px;overflow:auto;padding:0 10px 6px;overscroll-behavior:contain}.model-suggestion{display:flex!important;min-height:34px;flex-direction:row!important;align-items:center;gap:10px!important;margin:0!important;border-top:1px solid var(--c-borSec,var(--border));color:var(--c-texPri,var(--text))!important;font-size:13px!important;cursor:pointer}.model-suggestion:hover{background:var(--ca-bacIntTra,var(--faint))}.model-suggestion input{width:16px!important;height:16px!important;min-height:0!important;padding:0!important;border-radius:5px!important;box-shadow:none!important;accent-color:var(--c-bluBacAccPri,#2383e2)}.empty-models{padding:18px 8px;text-align:center;color:var(--c-texTer,var(--muted));font-size:12px}.models-card>label{margin-bottom:0}.models-card>label textarea{min-height:92px;font:12px/20px ui-monospace,SFMono-Regular,Consolas,monospace}.provider-advanced{padding:11px 14px}.provider-advanced>summary{font-size:13px!important;color:var(--text)!important}.profile-editor>.row.end{margin-top:12px}.settings-view button:not(.icon-button):not(.text-button):not(.danger-link){box-shadow:var(--c-shaBasSm,0 1px 2px rgba(0,0,0,.06)),inset 0 0 0 1px var(--ca-borPriTra,var(--border))}.settings-view button.primary{box-shadow:var(--c-shaBasSm,0 1px 2px rgba(0,0,0,.08))!important}
+    .profile-list{overflow:visible;border-radius:0;background:transparent;box-shadow:none}.profile-row.active{border-color:var(--c-bluBorAccPri,#2383e2);background:var(--ca-bluBacAccTra,rgba(35,131,226,.055));box-shadow:var(--c-shaBasSm,0 1px 2px rgba(0,0,0,.06)),0 0 0 1px var(--ca-bluBorAccTra,rgba(35,131,226,.14))}.profile-choice{flex-direction:row!important}.profile-choice>input{border-radius:8px!important}.profile-actions button{box-shadow:none!important}.model-settings-search input,.model-settings-search input:focus,.model-settings-search input:focus-visible{outline:none!important;border:0!important;box-shadow:none!important}.settings-view button[data-action="disconnect-notion"]:hover{color:var(--c-redTexPri,#e03e3e);background:var(--ca-redBacIntTra,rgba(224,62,62,.1))}
     @media(max-width:760px){.panel{width:100%!important}.resize-handle{display:none}.messages{padding-inline:14px}.grid-two{grid-template-columns:1fr}.full-page.showing-settings .chat-shell{display:none}.full-settings-sidebar{flex-basis:100%;width:100%;border-inline-start:0}}
+    @media(max-width:560px){.profile-row{gap:7px;padding-inline:8px}.profile-actions{gap:0}.profile-actions .check-profile-button span{display:none}.profile-actions .check-profile-button{width:28px;padding:0}.form-line{grid-template-columns:1fr;gap:6px}.form-line>input,.form-line>select{width:100%}.model-selector-toolbar{grid-template-columns:auto 1fr}.model-selector-toolbar>.text-button{justify-self:start}.model-settings-search{grid-column:2}.full-settings-sidebar{max-width:none}}
   `;
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, { once: true });

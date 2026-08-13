@@ -6,10 +6,10 @@ BYON does not call, proxy, or emulate Notion's private AI backend. Notion AI rem
 
 ## Features
 
-- Multiple OpenAI-compatible provider profiles
+- Compact connection management for multiple OpenAI-compatible provider profiles
 - Chat Completions and Responses API wire formats
 - Bearer, custom-header, and no-auth endpoints
-- Model discovery with manual model entry
+- Model discovery with searchable selection, select-all/clear controls, and manual model IDs
 - Grouped, searchable Notion-style model picker
 - Text-file attachments for HTML, Markdown, CSV, JSON, code, logs, and other text formats
 - Progressive streaming where supported, with buffered fallback
@@ -43,13 +43,15 @@ BYON appends these paths to the configured base URL:
 
 Choose the API type explicitly. Chat Completions is the default and has the broadest compatibility. BYON translates MCP tools into the standard function-tool shape for the selected API type.
 
+Connections are selected from the settings list and can be checked without making them active. Each connection keeps a chosen model set: reload endpoint suggestions, search and select models, or enter exact model IDs manually.
+
 Arbitrary custom endpoints require `@connect *`. Your userscript manager may ask for host permission the first time BYON contacts a domain. Requests use the manager's anonymous mode so Notion cookies are not forwarded.
 
 ## Notion MCP
 
 BYON's MCP integration means an AI controlling the user's Notion workspace through Notion MCP. It does not mean Notion AI connectors controlling unrelated apps.
 
-BYON acts as the MCP client instead of relying on a provider-specific flag or hosted-tool feature:
+The Notion MCP connection is global: connect it once and every provider profile can use it when selected. BYON acts as the MCP client instead of relying on a provider-specific flag or hosted-tool feature:
 
 1. Click **Connect Notion** and complete Notion's OAuth authorization with PKCE.
 2. BYON connects directly to `https://mcp.notion.com/mcp` using Streamable HTTP and discovers the available tools.
@@ -69,7 +71,7 @@ The composer includes three approval modes:
 
 This does not require `mcp_enabled`, an Unsloth preset, or an endpoint that implements OpenAI's remote-MCP extension. The selected model endpoint must support standard function calling. Text-only OpenAI-compatible endpoints cannot use MCP.
 
-Enabling Notion MCP makes the workspace tools available when a request needs them; it does not force tool use on every message. BYON first performs a structured semantic decision. General conversation, writing, coding, brainstorming, and arbitrary text go through the ordinary provider path without Notion instructions or tools.
+Enabling the global Notion MCP connection makes workspace tools available to the active provider when a request needs them; it does not force tool use on every message. BYON first performs a structured semantic decision. General conversation, writing, coding, brainstorming, and arbitrary text go through the ordinary provider path without Notion instructions or tools.
 
 For local llama.cpp-compatible endpoints, BYON automatically simplifies full MCP JSON Schemas to the conservative subset accepted by tool-call grammar compilers and sends only the tools relevant to the current request. If the endpoint still reports a grammar-compilation error, BYON retries once using a minimal JSON-string argument envelope and unwraps it before calling MCP. Notion MCP still validates the actual arguments, so simplifying the model-facing schema does not bypass Notion's validation or BYON's configured approval policy.
 

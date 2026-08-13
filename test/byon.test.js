@@ -47,6 +47,25 @@ test('tool approvals use inline Notion-style controls and expose three composer 
   assert.doesNotMatch(source, /Approve Notion tool call\?/);
 });
 
+test('profile management is list-first and Notion MCP is global', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
+  const defaults = Core.defaultState();
+  assert.equal(defaults.notionMcp.enabled, false);
+  assert.equal(defaults.profiles[0].mcpEnabled, undefined);
+  assert.match(source, /class="profile-list"/);
+  assert.match(source, /data-action="edit-profile"/);
+  assert.match(source, /data-profile-select/);
+  assert.match(source, /data-action="check-profile"/);
+  assert.match(source, /Connected and available globally/);
+  assert.match(source, /class="model-selector"/);
+  assert.match(source, /data-action="select-all-models"/);
+  assert.match(source, /syncSelectedModelsField\(profile\)/);
+  assert.match(source, /\.profile-row\.active\{border-color:var\(--c-bluBorAccPri/);
+  assert.match(source, /\.model-settings-search input:focus-visible\{outline:none!important/);
+  assert.doesNotMatch(source, /Use connection/);
+  assert.doesNotMatch(source, /Let this profile use Notion tools/);
+});
+
 test('full-page mode is restricted to Notion /ai and navigates there when requested', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
   assert.match(source, /function isNotionAiPath\(\)[\s\S]*?\/\^\\\/ai/);
@@ -123,11 +142,11 @@ test('provider endpoints and authentication are explicit', () => {
 });
 
 test('Chat Completions body includes system, current page, selection, visible excerpt, and MCP function tools', () => {
-  const p = profile({ systemPrompt: 'Be brief.', mcpEnabled: true });
+  const p = profile({ systemPrompt: 'Be brief.' });
   const tools = Core.mcpFunctionDefinitions([{ name: 'notion-search', description: 'Search Notion', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } }], 'chat_completions');
   const body = Core.buildChatCompletionsBody(p, [{ role: 'user', content: 'Update this.' }], {
     title: 'Roadmap', url: 'https://www.notion.so/roadmap', selection: 'Q3 goals', excerpt: 'Rendered blocks', truncated: true
-  }, { stream: false, tools: tools.map((tool) => tool.modelTool) });
+  }, { stream: false, tools: tools.map((tool) => tool.modelTool), includeMcpInstruction: true });
   assert.equal(body.model, 'test-model');
   assert.equal(body.stream, false);
   assert.match(body.messages[0].content, /Be brief/);
@@ -149,9 +168,9 @@ test('provider bodies include text-file attachments on their user message', () =
 });
 
 test('Responses body uses translated function tools without provider-managed MCP state', () => {
-  const p = profile({ apiType: 'responses', mcpEnabled: true });
+  const p = profile({ apiType: 'responses' });
   const definitions = Core.mcpFunctionDefinitions([{ name: 'notion-create-pages', description: 'Create pages', inputSchema: { type: 'object' } }], 'responses');
-  const body = Core.buildResponsesBody(p, [{ role: 'user', content: 'Create a page.' }], { title: 'Home', url: 'https://www.notion.so/home' }, { stream: false, tools: definitions.map((tool) => tool.modelTool) });
+  const body = Core.buildResponsesBody(p, [{ role: 'user', content: 'Create a page.' }], { title: 'Home', url: 'https://www.notion.so/home' }, { stream: false, tools: definitions.map((tool) => tool.modelTool), includeMcpInstruction: true });
   assert.equal(body.tools[0].type, 'function');
   assert.equal(body.tools[0].name, 'notion-create-pages');
   assert.equal(body.stream, false);
@@ -195,7 +214,7 @@ test('MCP tool routing accepts exact model-selected names and has a conservative
 });
 
 test('ordinary provider requests can omit Notion instructions when MCP is merely available', () => {
-  const p = profile({ systemPrompt: 'Be brief.', mcpEnabled: true });
+  const p = profile({ systemPrompt: 'Be brief.' });
   const ordinary = Core.buildChatCompletionsBody(p, [{ role: 'user', content: 'Write five paragraphs.' }], {}, { includeMcpInstruction: false });
   assert.match(ordinary.messages[0].content, /Be brief/);
   assert.doesNotMatch(ordinary.messages[0].content, /Notion MCP/);
@@ -333,17 +352,17 @@ test('approval mode migration defaults safely and preserves valid choices', () =
 });
 
 test('Chat Completions preserves assistant tool calls and tool results across rounds', () => {
-  const body = Core.buildChatCompletionsBody(profile({ mcpEnabled: true }), [
+  const body = Core.buildChatCompletionsBody(profile(), [
     { role: 'user', content: 'Find Sunny.' },
     { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'notion-search', arguments: '{"query":"Sunny"}' } }] },
     { role: 'tool', tool_call_id: 'call_1', content: '{"content":[{"type":"text","text":"Found"}]}' }
-  ], {});
+  ], {}, { includeMcpInstruction: true });
   assert.equal(body.messages[2].tool_calls[0].id, 'call_1');
   assert.deepEqual(body.messages[3], { role: 'tool', tool_call_id: 'call_1', content: '{"content":[{"type":"text","text":"Found"}]}' });
 });
 
 test('Responses preserves function calls and function outputs across rounds', () => {
-  const body = Core.buildResponsesBody(profile({ apiType: 'responses', mcpEnabled: true }), [
+  const body = Core.buildResponsesBody(profile({ apiType: 'responses' }), [
     { role: 'user', content: 'Find Sunny.' },
     { type: 'function_call', call_id: 'call_1', name: 'notion-search', arguments: '{"query":"Sunny"}' },
     { type: 'function_call_output', call_id: 'call_1', output: '{"content":[]}' }
@@ -388,14 +407,23 @@ test('secrets are redacted from provider and MCP errors', () => {
   assert.match(message, /\[redacted\]/);
 });
 
-test('state migration persists explicit defaults and clamps panel width', () => {
+test('state migration persists explicit defaults, global MCP, and clamps panel width', () => {
   const migrated = Core.migrateState({ settings: { panelWidth: 9999 }, profiles: [], chats: [] });
   assert.equal(migrated.settings.panelWidth, 720);
   assert.equal(migrated.settings.replacementEnabled, true);
   assert.equal(migrated.profiles.length, 1);
   assert.equal(migrated.profiles[0].apiType, 'chat_completions');
-  assert.equal(migrated.profiles[0].mcpEnabled, false);
+  assert.deepEqual(migrated.profiles[0].selectedModels, []);
+  assert.equal(migrated.profiles[0].mcpEnabled, undefined);
+  assert.equal(migrated.notionMcp.enabled, false);
   assert.equal(migrated.notionMcp.serverUrl, Core.DEFAULT_MCP_URL);
+  const legacyMcp = Core.migrateState({ settings: {}, profiles: [profile({ mcpEnabled: true })], chats: [] });
+  assert.equal(legacyMcp.notionMcp.enabled, true);
+  assert.equal(legacyMcp.profiles[0].mcpEnabled, undefined);
+  const legacyProfile = profile({ model: 'active', discoveredModels: ['active', 'extra'] });
+  delete legacyProfile.selectedModels;
+  const legacyModels = Core.migrateState({ settings: {}, profiles: [legacyProfile], chats: [] });
+  assert.deepEqual(legacyModels.profiles[0].selectedModels, ['active', 'extra']);
 });
 
 test('MCP protocol helpers parse Streamable HTTP headers and JSON or SSE payloads', () => {
