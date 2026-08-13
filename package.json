@@ -1,0 +1,14 @@
+{
+  "name": "byon-userscript",
+  "version": "0.2.2",
+  "private": true,
+  "description": "Bring your own OpenAI-compatible backend to a native-styled Notion chat panel.",
+  "scripts": {
+    "test": "node --test test/byon.test.js",
+    "smoke:browser": "node test/browser-smoke.cjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
