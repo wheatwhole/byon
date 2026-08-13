@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BYON - Bring Your Own Notion AI
 // @namespace    https://github.com/byon-userscript/byon
-// @version      0.2.2
+// @version      0.4.2
 // @description  Use your own OpenAI-compatible AI backend from a native-styled Notion chat panel.
 // @author       BYON contributors
 // @license      MIT
@@ -20,8 +20,9 @@
 (function byonUserscript(global) {
   'use strict';
 
-  const VERSION = '0.2.2';
+  const VERSION = '0.4.2';
   const STORAGE_KEY = 'byon-state-v1';
+  const FULL_PAGE_ROUTE_INTENT_KEY = 'byon-open-full-page-after-navigation';
   const PANEL_MIN_WIDTH = 320;
   const PANEL_MAX_WIDTH = 720;
   const DEFAULT_PANEL_WIDTH = 464;
@@ -29,11 +30,18 @@
   const MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024;
   const MAX_TOTAL_ATTACHMENT_CHARS = 100000;
   const DEFAULT_MCP_URL = 'https://mcp.notion.com/mcp';
+  const MCP_PROTOCOL_VERSION = '2025-06-18';
+  const MAX_MCP_TOOL_ROUNDS = 8;
+  const MAX_MCP_RESULT_CHARS = 100000;
+  const MAX_MODEL_MCP_TOOLS = 6;
+  const MAX_STALLED_TOOL_CONTINUATIONS = 2;
   const BYON_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAMAAAD04JH5AAABPlBMVEUAAADrw2zqwmvqwWvqwmzqwmvowWzrwWvfv3Dnv2jnv3Dqwmvvx2jvx3DpwWzqwWzqwm3rw2zrwmvqwmvrwmzqwm3owmvrwmvrw2rswmzvz3Dvv3DpwWvpwmrrwmvrwmrqv2rpwmzowWrsxGvnx3DqwWzqwWvqwmrqxWrtw2rowmnqw2tdUTOppJeqpJefhk2xlVXf3NiUjX3q6OV/d2OWfkn09PKCb0Lf3dhxYDrFpFzhumfe3djNq2CKgXC6nFh1a1ZfVDxpYEmylVWKgnCemYq/urHJx767nVjKxr6JgXCfmIqNdkbqwmvFo1xUSS9nWDdeUTOpjVHOq2CDb0Lgu2d6Zz6fhU1wYDqVfknp6OWfmYrJxr67nFiJgnC0r6R0bFbXs2T19PJqYEn///+ojVG/u7HU0cuylFWMdkaaFTKwAAAALHRSTlMAQN/fv5+Q7xAgIL8gIICQYM/v76+PcI9/UBAQoK9wrzBQsF8gz89gMG9wz2uCGYIAAAaNSURBVHja7ZpdX9pIFMYnBGgtXbor2laxun2T7m6xCkhba7cb2n1hd8cJAkFABTSCfP8vsKsixwknk2QyqTf93+XG5/md85wzEyKR4sXT1cVEStfpJfp66sniqvaKfBWWc4upeYoyn1p8+h2JFG1Rpx6sL2qRqSfmqS/mE1oElX8M6j6IJdT2QkvRwDzRbkkeiOVuSR6Iha/CfZCXArIgGT0amsdhqh+jwNfvw/IjqohHct2PUWXEJJLwXLh4mkf77caBWWMXmAdWo7W/16TuZH4mARGUv77fqDGMmtU+aqrJ4vIadWGvDeIoB+09l82YDdD+XyhKvQXqAsxxHQ9CyPjtWcw35rmEA9CXlwfM1gBxIK1ft1hgzDPEgZx+s8WcnB53h4edjv0/J53RYa973McaEdzBMqK/ZzKOfvfwxJ7lZNQ7NhjP2NmHda9ZQObvjN2klO/YArbyfCXMHec0EiGPZ8vfYIBRGNmebBVOGQNaQQ6Gn6iTgclAPg+VFzO8aWGb8jwXBHBepF8o2kAQCxa/nzPuQYwJ9E9HdjDy4OCAdxDLCg8gXL97YgelCEWwfMVAc9c3qjYgU4R/KYfmqwHNqf5p0ZajB7OANkE8gdP56xdtWbYMNoHfB2lkAqiD1lQf2h/CwWs+iLOTkHDu35D64AANYkqUQAgg9F+eP9iEIz6HHgkcq9KHWTCbghLkKE+dTaja4Smhk6AJC3DdgLytgKKB5TAlSsD5dQNsJeQ9S7DgUoCirYZTjxLcdylA11bECC1B1nUHmPwEqMvha5d1GMMLMLSV8Se2kDNuEbQggcqYDEKbjyHegYGPApQ3vpS6HXgqwRNOHutBglyRQZegURQveLBYvXwyhB0rCnqg4REs2K50KuyKd5dPxsRxxzOGeA8e4MfgO9uVAmNgEp66PnpgclpJcsEPlGPbO4IVNsG4zBc8CdhlV3C7KIZtoffepwCbcpFAePIzB3/N7KIlfAbe+TFgcAZ+s0UUsBB8PxuBIx9LoAQZ4J78XFCtmRCk0Aj8ags4ZDcPqyE8idjFNkFqdgtYftZwnstJAZ4ElCGF3CZ4RXlqEAEBwz4zSiPkyftM/sjJ3XOuoY8QaNUcs0vOOb0lsoqsIQi0Sn7H7gQPnUNwDhlUCozB2DEGC+j7UNdWDEzLW/5AdE7hGEm02nvZe04v7jwJ3sIUqmYXO45iJIaugaqtniJugKIGRtEZYJQjegPANwNBDFRvwQA6htEbcI7hOHoD4j2wHd0mLGMG1kkKPQsK0e2B145VvCI6DaM/C565vJZUbClkbqWr+K38JLILSdtxIVmiPLXINlGfXbLpeDucwzeR+jHoMOxS+iMhGXQMSrZqhtgQZGZfTHbg1UwtJexGFodXM2cI8hF1YHPm1SxH0V1oKJ6DAvqr/RIhJEvxHvxjq+SQYZdyeg/7ndhi6iexXGFXDPiTAH6iQUpgdBQ2AC9AEn6kwkpQUeZgg00YoF/PMm4fCyojxfpvKMV+Kl1x/16+oaL/XTbBpDwJ+KkWacIVlWHoBdBnE2oDinUAegB8MBkDC2GiUN5gUz5RHp1ck0a/2gNfhmVZeYMxCADeAdhFXA0sxlHqBQ/kqGswTB+20JQUneUNc1LqVn3v53KVU2e1TerkGf7RCtgxGRBgO3aqvUKf8Zh1CkAE8RIAZ6bYQHkEDIfDXr5QKJ0yhHaTAhBBrgQog01TZKDPfGHuUIQcIYISAJuWq4GuP3noPlIAUQmgDBZqYIP5wDqiAJYAvAR4IHkDPeaJ+Qayh+wAnjkqxHIaqDIxtcbZgALoDuBJBzLQMdylzUb7M4ijpMksWd2/AfhsxaxrxuNxq/X5qI5ICxMIaP4NlCuwYGXQCMoD3wb+DqefJADeBLEBWAANKoNO3JjL+DKwwf2PWGDu3COu5HwYgAVgDqgMD4mAB94GtkLqp4mQNS8DMIB1KsMaEZNdFxsA/TO5AN4lHszpIgPVfrgB1CGAQRyAgal+W1pf0sFbxmFJ68s6aHH6ZlNWX9rBDgMkB3Ad9D3Jzk7jNujXpPTXhPn3vh18eD/V/6ToABLzMOPypmLVZfZ/jgDSQRhstsetHcXxEx8MikjeJXJoOlWArhF50jQ06bskDHMrNBRxUfej70NcIyrI6bckD2gLtyYPWdADLR6Injq0lTs+1RMaiQgt+dJz6pMaiZS5pWTcpRJ34skcVD5SXmmryYX4y0ksdD2eSK4uvZD6U/8BYsW8TtKUmBsAAAAASUVORK5CYII=';
   const NOTION_INSTRUCTION = [
     'You can use Notion MCP tools to work with the user\'s Notion workspace.',
     'Use those tools whenever the user asks you to search, read, create, or change Notion pages, databases, properties, comments, or blocks.',
     'When the current Notion page URL is relevant, use it as the target or fetch it before acting.',
+    'If another Notion lookup or action is required to answer the request, call the tool immediately in the same turn. Do not end with phrases such as "let me fetch that", "I need to check that", or "I would need to use a tool".',
+    'Only give the final answer after all necessary tool calls and their results are complete.',
     'Never claim that a Notion action succeeded unless the corresponding tool returned a successful result.',
     'If a required Notion tool is unavailable, denied, or fails, explain that clearly instead of pretending the change happened.'
   ].join(' ');
@@ -54,12 +62,9 @@
       headerName: 'x-api-key',
       headerPrefix: '',
       systemPrompt: '',
-      mcpMode: 'off',
-      mcpUrl: DEFAULT_MCP_URL,
-      mcpServerLabel: 'notion',
-      mcpAuthorization: '',
-      mcpHeaders: {},
-      discoveredModels: []
+      mcpEnabled: false,
+      discoveredModels: [],
+      modelMetadata: {}
     };
   }
 
@@ -73,6 +78,22 @@
         activeProfileId: profile.id
       },
       profiles: [profile],
+      notionMcp: {
+        serverUrl: DEFAULT_MCP_URL,
+        authMode: 'oauth',
+        headers: {},
+        accessToken: '',
+        refreshToken: '',
+        expiresAt: 0,
+        clientId: '',
+        clientSecret: '',
+        authorizationEndpoint: '',
+        tokenEndpoint: '',
+        registrationEndpoint: '',
+        redirectUri: '',
+        pendingOAuth: null,
+        connectedAt: ''
+      },
       chats: [],
       activeChatId: null
     };
@@ -127,15 +148,15 @@
     return headers;
   }
 
-  function secretsForProfile(profile) {
-    const headers = profile && profile.mcpHeaders && typeof profile.mcpHeaders === 'object' && !Array.isArray(profile.mcpHeaders)
-      ? Object.values(profile.mcpHeaders)
+  function secretsForProfile(profile, notionMcp) {
+    const headers = notionMcp && notionMcp.headers && typeof notionMcp.headers === 'object' && !Array.isArray(notionMcp.headers)
+      ? Object.values(notionMcp.headers)
       : [];
-    return [profile?.apiKey, profile?.mcpAuthorization, ...headers];
+    return [profile?.apiKey, notionMcp?.accessToken, notionMcp?.refreshToken, notionMcp?.clientSecret, ...headers];
   }
 
   function profileSystemPrompt(profile) {
-    return [profile.systemPrompt && profile.systemPrompt.trim(), profile.mcpMode !== 'off' && NOTION_INSTRUCTION]
+    return [profile.systemPrompt && profile.systemPrompt.trim(), profile.mcpEnabled && NOTION_INSTRUCTION]
       .filter(Boolean)
       .join('\n\n');
   }
@@ -190,39 +211,252 @@
     return 'Other models';
   }
 
-  function buildChatCompletionsBody(profile, messages, context) {
+  function modelContextInfo(model) {
+    const value = String(model || '').toLowerCase();
+    if (/gemini-(?:2\.5|3)/.test(value)) return { tokens: 1048576, label: '1M context', detail: 'Multimodal' };
+    if (/claude|sonnet|opus|haiku/.test(value)) return { tokens: 200000, label: '200K context', detail: 'Tools + vision' };
+    if (/gpt-4\.1/.test(value)) return { tokens: 1047576, label: '1M context', detail: 'Tools + vision' };
+    if (/gpt-4o|gpt-4-turbo/.test(value)) return { tokens: 128000, label: '128K context', detail: 'Tools + vision' };
+    if (/gpt-5/.test(value)) return { tokens: 400000, label: '400K context', detail: 'Reasoning + tools' };
+    if (/deepseek|mistral|mixtral|codestral|qwen|kimi/.test(value)) return { tokens: 128000, label: '128K context' };
+    if (/llama-4/.test(value)) return { tokens: 1048576, label: '1M context' };
+    return { tokens: null, label: 'Context unknown' };
+  }
+
+  function contextLimitFromModelRecord(record) {
+    const candidates = [record?.context_length, record?.context_window, record?.max_context_length, record?.input_token_limit,
+      record?.inputTokenLimit, record?.max_model_len, record?.max_position_embeddings, record?.limits?.context,
+      record?.limits?.input_tokens, record?.capabilities?.context_window];
+    const value = candidates.map(Number).find((candidate) => Number.isFinite(candidate) && candidate > 0);
+    return value || null;
+  }
+
+  function formatContextLimit(tokens) {
+    if (!tokens) return 'Context unknown';
+    if (tokens >= 1000000) return `${Math.round(tokens / 100000) / 10}M context`;
+    return `${Math.round(tokens / 1000)}K context`;
+  }
+
+  function estimatedTokenCount(text) {
+    return Math.ceil(String(text || '').length / 4);
+  }
+
+  function buildChatCompletionsBody(profile, messages, context, options = {}) {
     const system = profileSystemPrompt(profile);
     const wireMessages = [];
     if (system) wireMessages.push({ role: 'system', content: system });
+    let lastUserIndex = -1;
+    messages.forEach((message, index) => { if (message.role === 'user') lastUserIndex = index; });
     for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index];
+      if (message.role === 'tool') {
+        wireMessages.push({ role: 'tool', tool_call_id: message.tool_call_id, content: message.content });
+        continue;
+      }
+      if (message.role === 'assistant' && message.tool_calls) {
+        wireMessages.push({ role: 'assistant', content: message.content || null, tool_calls: message.tool_calls });
+        continue;
+      }
       let content = messageContentWithAttachments(message);
-      if (index === messages.length - 1 && message.role === 'user') {
+      if (index === lastUserIndex && message.role === 'user') {
         const attached = contextText(context);
         if (attached) content = `${attached}\n\nUser message:\n${content}`;
       }
       wireMessages.push({ role: message.role, content });
     }
-    return { model: profile.model, messages: wireMessages, stream: true };
+    const body = { model: profile.model, messages: wireMessages, stream: options.stream !== false };
+    if (options.tools?.length) body.tools = options.tools;
+    if (options.toolChoice) body.tool_choice = options.toolChoice;
+    return body;
   }
 
-  function remoteMcpTool(profile) {
-    const tool = {
-      type: 'mcp',
-      server_label: profile.mcpServerLabel || 'notion',
-      server_url: profile.mcpUrl || DEFAULT_MCP_URL,
-      require_approval: 'always'
+  function resolveLocalSchemaRef(ref, rootSchema) {
+    if (typeof ref !== 'string' || !ref.startsWith('#/')) return null;
+    let value = rootSchema;
+    for (const segment of ref.slice(2).split('/')) {
+      const key = segment.replace(/~1/g, '/').replace(/~0/g, '~');
+      if (!value || typeof value !== 'object' || !(key in value)) return null;
+      value = value[key];
+    }
+    return value;
+  }
+
+  function mergeSchemaUnion(branches, rootSchema, seenRefs, depth) {
+    const normalized = (branches || [])
+      .filter((branch) => branch && branch.type !== 'null')
+      .map((branch) => normalizeMcpSchemaForModel(branch, rootSchema, seenRefs, depth + 1));
+    if (!normalized.length) return { type: 'string' };
+    if (normalized.length === 1) return normalized[0];
+    if (normalized.every((branch) => branch.type === 'object')) {
+      const properties = Object.assign({}, ...normalized.map((branch) => branch.properties || {}));
+      const requiredLists = normalized.map((branch) => branch.required || []);
+      const required = requiredLists.length
+        ? requiredLists.reduce((shared, list) => shared.filter((name) => list.includes(name)), requiredLists[0])
+        : [];
+      return { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: true };
+    }
+    const types = [...new Set(normalized.map((branch) => branch.type).filter(Boolean))];
+    if (types.length === 1) {
+      const enumValues = normalized.flatMap((branch) => branch.enum || (Object.hasOwn(branch, 'const') ? [branch.const] : []));
+      return { type: types[0], ...(enumValues.length ? { enum: [...new Set(enumValues)].slice(0, 100) } : {}) };
+    }
+    // A broad JSON object is safer than an unsupported mixed union. Notion MCP remains authoritative.
+    return { type: 'object', additionalProperties: true };
+  }
+
+  function normalizeMcpSchemaForModel(schema, rootSchema = schema, seenRefs = new Set(), depth = 0) {
+    if (!schema || typeof schema !== 'object' || depth > 12) return { type: 'string' };
+    if (schema.$ref) {
+      if (seenRefs.has(schema.$ref)) return { type: 'object', additionalProperties: true };
+      const resolved = resolveLocalSchemaRef(schema.$ref, rootSchema);
+      if (!resolved) return { type: 'object', additionalProperties: true };
+      const nextSeen = new Set(seenRefs); nextSeen.add(schema.$ref);
+      return normalizeMcpSchemaForModel(resolved, rootSchema, nextSeen, depth + 1);
+    }
+    if (schema.oneOf || schema.anyOf) return mergeSchemaUnion(schema.oneOf || schema.anyOf, rootSchema, seenRefs, depth);
+    if (schema.allOf) {
+      const objectParts = schema.allOf.map((part) => normalizeMcpSchemaForModel(part, rootSchema, seenRefs, depth + 1));
+      return mergeSchemaUnion(objectParts, rootSchema, seenRefs, depth);
+    }
+    const rawType = Array.isArray(schema.type) ? schema.type.find((type) => type !== 'null') : schema.type;
+    const inferredType = rawType || (schema.properties ? 'object' : schema.items ? 'array' : schema.enum?.length ? typeof schema.enum[0] : 'string');
+    const description = typeof schema.description === 'string' ? schema.description.slice(0, 500) : undefined;
+    if (inferredType === 'object') {
+      const properties = {};
+      for (const [name, property] of Object.entries(schema.properties || {})) {
+        properties[name] = normalizeMcpSchemaForModel(property, rootSchema, seenRefs, depth + 1);
+      }
+      const required = (schema.required || []).filter((name) => Object.hasOwn(properties, name));
+      return {
+        type: 'object',
+        ...(description ? { description } : {}),
+        ...(Object.keys(properties).length ? { properties } : {}),
+        ...(required.length ? { required } : {}),
+        additionalProperties: true
+      };
+    }
+    if (inferredType === 'array') {
+      return {
+        type: 'array',
+        ...(description ? { description } : {}),
+        items: normalizeMcpSchemaForModel(schema.items || {}, rootSchema, seenRefs, depth + 1)
+      };
+    }
+    const type = ['string', 'integer', 'number', 'boolean'].includes(inferredType) ? inferredType : 'string';
+    const enumValues = Array.isArray(schema.enum) && schema.enum.length <= 100 ? schema.enum : undefined;
+    const constant = Object.hasOwn(schema, 'const') ? schema.const : undefined;
+    return {
+      type,
+      ...(description ? { description } : {}),
+      ...(enumValues ? { enum: enumValues } : {}),
+      ...(constant !== undefined ? { enum: [constant] } : {})
     };
-    if (profile.mcpAuthorization) tool.authorization = profile.mcpAuthorization;
-    const headers = parseHeaderObject(profile.mcpHeaders);
-    if (Object.keys(headers).length) tool.headers = headers;
-    return tool;
   }
 
-  function buildResponsesBody(profile, messages, context, continuation) {
+  function toolSearchText(tool) {
+    return `${tool?.name || ''} ${tool?.description || ''}`.toLowerCase();
+  }
+
+  function selectMcpToolsForTurn(tools, userText, limit = MAX_MODEL_MCP_TOOLS) {
+    const available = Array.isArray(tools) ? tools : [];
+    if (available.length <= limit) return available;
+    const query = String(userText || '').toLowerCase();
+    const queryWords = [...new Set(query.match(/[a-z0-9_-]{3,}/g) || [])];
+    const wantedNames = new Set();
+    const addMatching = (...patterns) => {
+      for (const tool of available) if (patterns.some((pattern) => pattern.test(tool.name || ''))) wantedNames.add(tool.name);
+    };
+    // Read/navigation tools support most tasks and let the model resolve a page before writing.
+    addMatching(/(?:^|-)search$/, /(?:^|-)fetch$/, /query-data-sources$/);
+    if (/\b(create|add|make|new)\b/.test(query)) addMatching(/create-pages?$/, /create-(?:database|folder|view|comment|attachment)$/);
+    if (/\b(update|edit|change|append|replace|rename|set|mark|complete)\b/.test(query)) addMatching(/update-(?:page|data-source|view)$/, /create-comment$/);
+    if (/\b(move|reorganize)\b/.test(query)) addMatching(/move-pages?$/);
+    if (/\b(duplicate|copy)\b/.test(query)) addMatching(/duplicate-page$/);
+    if (/\b(comment|discussion|reply|feedback)\b/.test(query)) addMatching(/(?:create|get)-comments?$/);
+    if (/\b(database|data source|table|sql|query|view|board|calendar|timeline)\b/.test(query)) addMatching(/query-data-sources$/, /query-database-view$/, /(?:create|update)-(?:database|data-source|view)$/);
+    if (/\b(user|person|people|member|email|team|teamspace)\b/.test(query)) addMatching(/get-(?:users|teams)$/);
+    if (/\b(upload|attachment|file)\b/.test(query)) addMatching(/(?:create|download)-(?:file-upload|attachment)$/);
+    if (/\b(async|status|ready|finished|complete)\b/.test(query) || [...wantedNames].some((name) => /create-pages|update-page|duplicate-page/.test(name))) addMatching(/get-async-task$/);
+    const scored = available.map((tool, index) => {
+      const text = toolSearchText(tool);
+      const keywordScore = queryWords.reduce((score, word) => score + (text.includes(word) ? 2 : 0), 0);
+      const explicitScore = wantedNames.has(tool.name) ? 100 : 0;
+      const coreScore = /(?:^|-)search$|(?:^|-)fetch$/.test(tool.name || '') ? 20 : 0;
+      return { tool, score: explicitScore + coreScore + keywordScore, index };
+    });
+    scored.sort((a, b) => b.score - a.score || a.index - b.index);
+    const relevant = scored.filter((entry) => entry.score > 0);
+    return (relevant.length ? relevant : scored).slice(0, limit).map((entry) => entry.tool);
+  }
+
+  function compactSchemaDescription(schema) {
+    const text = JSON.stringify(normalizeMcpSchemaForModel(schema || { type: 'object' }));
+    return text.length > 2400 ? `${text.slice(0, 2400)}…` : text;
+  }
+
+  function mcpFunctionDefinitions(tools, apiType, options = {}) {
+    const usedNames = new Set();
+    return (tools || []).map((tool, index) => {
+      const base = String(tool.name || `tool_${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 56) || `tool_${index + 1}`;
+      let wireName = base;
+      let suffix = 2;
+      while (usedNames.has(wireName)) wireName = `${base.slice(0, 52)}_${suffix++}`;
+      usedNames.add(wireName);
+      const sourceSchema = tool.inputSchema && typeof tool.inputSchema === 'object' ? tool.inputSchema : { type: 'object' };
+      const jsonEnvelope = options.schemaMode === 'json_envelope';
+      const baseDescription = String(tool.description || `Notion MCP tool: ${tool.name || wireName}`);
+      const description = jsonEnvelope
+        ? `${baseDescription}\nPass the tool arguments as a JSON object encoded in arguments_json. Expected shape: ${compactSchemaDescription(sourceSchema)}`.slice(0, 4096)
+        : baseDescription.slice(0, 4096);
+      const parameters = jsonEnvelope
+        ? { type: 'object', properties: { arguments_json: { type: 'string', description: 'A JSON-encoded object containing this tool call\'s arguments.' } }, required: ['arguments_json'] }
+        : normalizeMcpSchemaForModel(sourceSchema);
+      return {
+        wireName,
+        mcpName: tool.name,
+        argumentMode: jsonEnvelope ? 'json_envelope' : 'object',
+        originalSchema: sourceSchema,
+        modelTool: apiType === 'responses'
+          ? { type: 'function', name: wireName, description, parameters }
+          : { type: 'function', function: { name: wireName, description, parameters } }
+      };
+    });
+  }
+
+  function argumentsForMcpTool(definition, wireArguments) {
+    const parsed = parseToolArguments(wireArguments);
+    if (definition?.argumentMode !== 'json_envelope') return parsed;
+    if (typeof parsed.arguments_json !== 'string') throw new Error('The model did not provide arguments_json for the compatibility tool call.');
+    return parseToolArguments(parsed.arguments_json);
+  }
+
+  function isToolGrammarCompilationError(error) {
+    return /(?:compile|parse|generate|build|resolv).{0,40}(?:tool[- ]call|grammar|parser|schema)|tool[- ]calling grammar|number of repetitions exceeds/i.test(String(error?.message || error || ''));
+  }
+
+  function appearsToStopBeforeToolCall(text) {
+    const value = String(text || '').trim();
+    if (!value) return false;
+    return /(?:\b(?:let me|i(?:'|’)ll|i will|i need to|i(?:'|’)m going to|next,? i(?:'|’)ll|to (?:answer|confirm|see|find|determine)[^.!?]{0,80},? i (?:need|have) to)\b[^.!?\n]{0,160}\b(?:fetch|search|look up|check|query|read|open|inspect|retrieve|update|create|call|use (?:the )?(?:notion|tool))\b|\b(?:i would need|i need) to (?:fetch|search|query|read|use|call)\b|\b(?:let me do that|i(?:'|’)ll do that now)\s*[:.!…]*\s*$)/i.test(value);
+  }
+
+  function continuationInstruction(previousText) {
+    return [
+      'Continue the same task now.',
+      'Your previous response said another Notion lookup or action was needed but did not emit a structured function call.',
+      'Call the appropriate available function now. Do not repeat the progress summary or promise a future action.',
+      'If no further tool is actually needed, provide the complete final answer instead.',
+      `Previous response:\n${String(previousText || '').slice(0, 4000)}`
+    ].join('\n\n');
+  }
+
+  function buildResponsesBody(profile, messages, context, options = {}) {
+    let lastUserIndex = -1;
+    messages.forEach((message, index) => { if (message.role === 'user') lastUserIndex = index; });
     const input = messages.map((message, index) => {
+      if (message.type) return message;
       let content = messageContentWithAttachments(message);
-      if (index === messages.length - 1 && message.role === 'user') {
+      if (index === lastUserIndex && message.role === 'user') {
         const attached = contextText(context);
         if (attached) content = `${attached}\n\nUser message:\n${content}`;
       }
@@ -232,23 +466,37 @@
       model: profile.model,
       instructions: profileSystemPrompt(profile) || undefined,
       input,
-      stream: true,
-      // Remote MCP approval continuation references this response by ID.
-      store: profile.mcpMode === 'responses_remote'
+      stream: options.stream !== false,
+      store: false
     };
-    if (profile.mcpMode === 'responses_remote') body.tools = [remoteMcpTool(profile)];
-    if (continuation) {
-      body.previous_response_id = continuation.responseId;
-      body.input = [{
-        type: 'mcp_approval_response',
-        approval_request_id: continuation.approvalRequestId,
-        approve: Boolean(continuation.approve),
-        reason: continuation.reason || undefined
-      }];
-      // Responses instructions are not inherited when previous_response_id is used.
-      body.instructions = profileSystemPrompt(profile) || undefined;
-    }
+    if (options.tools?.length) body.tools = options.tools;
+    if (options.toolChoice) body.tool_choice = options.toolChoice;
     return body;
+  }
+
+  function chatToolCallsFromPayload(payload) {
+    return payload?.choices?.[0]?.message?.tool_calls || [];
+  }
+
+  function responseToolCallsFromPayload(payload) {
+    return Array.isArray(payload?.output) ? payload.output.filter((item) => item?.type === 'function_call') : [];
+  }
+
+  function parseResponseHeaders(raw) {
+    const headers = {};
+    for (const line of String(raw || '').split(/\r?\n/)) {
+      const separator = line.indexOf(':');
+      if (separator > 0) headers[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim();
+    }
+    return headers;
+  }
+
+  function parseMcpResponseText(text) {
+    const source = String(text || '').trim();
+    if (!source) return null;
+    try { return JSON.parse(source); } catch (_) { /* SSE response */ }
+    const events = parseSseText(`${source}\n\n`, 0).events;
+    return events.find((event) => event && (event.result || event.error)) || events[events.length - 1] || null;
   }
 
   function parseSseText(text, offset) {
@@ -280,11 +528,6 @@
     if (!event) return '';
     if (event.type === 'response.output_text.delta') return event.delta || '';
     return '';
-  }
-
-  function approvalsFromResponsePayload(payload) {
-    const output = payload && payload.output ? payload.output : payload && payload.response && payload.response.output;
-    return Array.isArray(output) ? output.filter((item) => item && item.type === 'mcp_approval_request') : [];
   }
 
   function extractBufferedText(profile, text) {
@@ -362,8 +605,19 @@
     const fallback = defaultState();
     if (!raw || typeof raw !== 'object') return fallback;
     const profiles = Array.isArray(raw.profiles) && raw.profiles.length
-      ? raw.profiles.map((profile) => ({ ...defaultProfile(), ...profile, mcpHeaders: profile.mcpHeaders || {} }))
+      ? raw.profiles.map((profile) => ({
+        ...defaultProfile(),
+        ...profile,
+        mcpEnabled: typeof profile.mcpEnabled === 'boolean' ? profile.mcpEnabled : Boolean(profile.mcpMode && profile.mcpMode !== 'off')
+      }))
       : fallback.profiles;
+    const legacyMcpProfile = profiles.find((profile) => profile.mcpAuthorization || profile.mcpHeaders);
+    const notionMcp = {
+      ...fallback.notionMcp,
+      ...(raw.notionMcp && typeof raw.notionMcp === 'object' ? raw.notionMcp : {}),
+      headers: raw.notionMcp?.headers || legacyMcpProfile?.mcpHeaders || {},
+      accessToken: raw.notionMcp?.accessToken || legacyMcpProfile?.mcpAuthorization || ''
+    };
     const chats = Array.isArray(raw.chats) ? raw.chats.filter((chat) => chat && Array.isArray(chat.messages)) : [];
     const activeProfileId = profiles.some((profile) => profile.id === raw.settings?.activeProfileId)
       ? raw.settings.activeProfileId
@@ -376,18 +630,23 @@
         activeProfileId
       },
       profiles,
+      notionMcp,
       chats,
       activeChatId: chats.some((chat) => chat.id === raw.activeChatId) ? raw.activeChatId : chats[0]?.id || null
     };
   }
 
   const Core = {
-    VERSION, DEFAULT_MCP_URL, NOTION_INSTRUCTION, defaultState, defaultProfile, normalizeBaseUrl,
+    VERSION, DEFAULT_MCP_URL, MCP_PROTOCOL_VERSION, NOTION_INSTRUCTION, defaultState, defaultProfile, normalizeBaseUrl,
     endpointFor, authHeaders, redactSecret, parseHeaderObject, profileSystemPrompt, contextText,
     buildChatCompletionsBody, buildResponsesBody, parseSseText, chatDeltaFromEvent,
-    responseDeltaFromEvent, approvalsFromResponsePayload, extractBufferedText, escapeHtml,
+    responseDeltaFromEvent, extractBufferedText, normalizeMcpSchemaForModel, selectMcpToolsForTurn,
+    mcpFunctionDefinitions, argumentsForMcpTool, isToolGrammarCompilationError,
+    appearsToStopBeforeToolCall, continuationInstruction,
+    chatToolCallsFromPayload, responseToolCallsFromPayload, parseResponseHeaders, parseMcpResponseText, escapeHtml,
     safeLink, renderMarkdown, isNotionAiTriggerLabel, secretsForProfile, attachmentsText,
-    messageContentWithAttachments, isSupportedTextFile, modelGroup, migrateState, clamp
+    messageContentWithAttachments, isSupportedTextFile, modelGroup, modelContextInfo, contextLimitFromModelRecord,
+    formatContextLimit, estimatedTokenCount, migrateState, clamp
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;
@@ -429,6 +688,10 @@
   let shadow;
   let panel;
   let currentRequest = null;
+  let mcpOperationActive = false;
+  let currentOperationId = 0;
+  let stoppedOperationId = 0;
+  let viewMode = 'side';
   let settingsOpen = false;
   let historyOpen = false;
   let plusOpen = false;
@@ -440,10 +703,206 @@
   let includeVisiblePage = false;
   let lastNotionSelection = '';
   let replacementObserver = null;
+  let inputIsolationInstalled = false;
+  let suppressedFullPageUrl = '';
+  let observedLocationUrl = '';
+  let pendingFullPageOpen = false;
+  let observedNotionSidebar = null;
+  let observedNotionToolbar = null;
+  let sidebarResizeObserver = null;
+  let fullPageWorkspace = null;
+  let fullPageWorkspaceInlinePosition = '';
   const restoredTriggers = new Map();
 
   async function persist() {
     await gm.setValue(STORAGE_KEY, state);
+  }
+
+  function gmRequest(details) {
+    return new Promise((resolve, reject) => {
+      let request;
+      try {
+        request = gm.request({
+          anonymous: true,
+          timeout: 120000,
+          ...details,
+          onload: resolve,
+          onerror: () => reject(new Error('Network request failed. Check the endpoint, userscript host permission, and connection.')),
+          ontimeout: () => reject(new Error('The request timed out after 120 seconds.')),
+          onabort: () => reject(new Error('Request stopped.'))
+        });
+        currentRequest = request;
+      } catch (error) { reject(error); }
+    }).finally(() => { currentRequest = null; });
+  }
+
+  async function requestJson(url, options = {}) {
+    const response = await gmRequest({
+      method: options.method || 'GET',
+      url,
+      headers: { Accept: 'application/json', ...(options.headers || {}) },
+      data: options.data
+    });
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`HTTP ${response.status}: ${response.responseText || response.statusText || 'Request failed'}`);
+    }
+    try { return { body: JSON.parse(response.responseText || '{}'), response }; }
+    catch (error) { throw new Error(`Could not parse JSON response: ${error.message}`); }
+  }
+
+  function base64Url(bytes) {
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function randomBase64Url(size = 32) {
+    const bytes = new Uint8Array(size);
+    global.crypto.getRandomValues(bytes);
+    return base64Url(bytes);
+  }
+
+  async function pkceChallenge(verifier) {
+    const digest = await global.crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+    return base64Url(new Uint8Array(digest));
+  }
+
+  function oauthMetadataUrl(issuer) {
+    const url = new URL(issuer);
+    const path = url.pathname === '/' ? '' : url.pathname.replace(/\/$/, '');
+    return `${url.origin}/.well-known/oauth-authorization-server${path}`;
+  }
+
+  async function discoverMcpOAuth(serverUrl) {
+    const server = new URL(serverUrl);
+    const candidates = [
+      `${server.origin}/.well-known/oauth-protected-resource${server.pathname.replace(/\/$/, '')}`,
+      `${server.origin}/.well-known/oauth-protected-resource`
+    ];
+    let resource;
+    let lastError;
+    for (const candidate of [...new Set(candidates)]) {
+      try { resource = (await requestJson(candidate)).body; if (resource?.authorization_servers?.length) break; }
+      catch (error) { lastError = error; }
+    }
+    const issuer = resource?.authorization_servers?.[0];
+    if (!issuer) throw lastError || new Error('The MCP server did not advertise an OAuth authorization server.');
+    const metadata = (await requestJson(oauthMetadataUrl(issuer))).body;
+    if (!metadata.authorization_endpoint || !metadata.token_endpoint) throw new Error('OAuth metadata is missing authorization or token endpoints.');
+    return metadata;
+  }
+
+  async function registerMcpOAuthClient(metadata, redirectUri) {
+    if (!metadata.registration_endpoint) throw new Error('This MCP server does not support dynamic OAuth client registration.');
+    return (await requestJson(metadata.registration_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify({
+        client_name: 'BYON userscript',
+        client_uri: 'https://github.com/byon-userscript/byon',
+        redirect_uris: [redirectUri],
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none'
+      })
+    })).body;
+  }
+
+  async function exchangeMcpOAuthToken(notionMcp, parameters) {
+    const form = new URLSearchParams(parameters);
+    form.set('client_id', notionMcp.clientId);
+    if (notionMcp.clientSecret) form.set('client_secret', notionMcp.clientSecret);
+    const result = (await requestJson(notionMcp.tokenEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      data: form.toString()
+    })).body;
+    if (!result.access_token) throw new Error('OAuth token response did not include an access token.');
+    notionMcp.accessToken = result.access_token;
+    if (result.refresh_token) notionMcp.refreshToken = result.refresh_token;
+    notionMcp.expiresAt = result.expires_in ? Date.now() + (Number(result.expires_in) * 1000) : 0;
+    notionMcp.connectedAt = nowIso();
+    notionMcp.pendingOAuth = null;
+  }
+
+  async function ensureFreshMcpToken() {
+    const connection = state.notionMcp;
+    if (connection.authMode === 'none') return '';
+    if (!connection.accessToken) throw new Error(connection.authMode === 'bearer' ? 'Enter the MCP bearer token in BYON settings.' : 'Connect Notion in BYON settings before using Notion tools.');
+    if (connection.authMode === 'bearer') return connection.accessToken;
+    if (!connection.expiresAt || connection.expiresAt > Date.now() + 60000) return connection.accessToken;
+    if (!connection.refreshToken || !connection.tokenEndpoint || !connection.clientId) {
+      throw new Error('The Notion authorization expired. Reconnect Notion in BYON settings.');
+    }
+    await exchangeMcpOAuthToken(connection, { grant_type: 'refresh_token', refresh_token: connection.refreshToken });
+    await persist();
+    return connection.accessToken;
+  }
+
+  function mcpRequestHeaders(connection, token, sessionId) {
+    const headers = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
+      ...parseHeaderObject(connection.headers)
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (sessionId) headers['Mcp-Session-Id'] = sessionId;
+    return headers;
+  }
+
+  async function sendMcpRpc(method, params, sessionId, notification = false) {
+    const connection = state.notionMcp;
+    const token = await ensureFreshMcpToken();
+    const payload = { jsonrpc: '2.0', method };
+    if (!notification) payload.id = uid('rpc');
+    if (params) payload.params = params;
+    const response = await gmRequest({
+      method: 'POST',
+      url: connection.serverUrl || DEFAULT_MCP_URL,
+      headers: mcpRequestHeaders(connection, token, sessionId),
+      data: JSON.stringify(payload)
+    });
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`Notion MCP HTTP ${response.status}: ${response.responseText || response.statusText || 'Request failed'}`);
+    }
+    if (notification) return { result: null, sessionId };
+    const message = parseMcpResponseText(response.responseText);
+    if (!message) throw new Error('Notion MCP returned an empty response.');
+    if (message.error) throw new Error(`Notion MCP ${message.error.code || 'error'}: ${message.error.message || 'Request failed'}`);
+    return {
+      result: message.result,
+      sessionId: parseResponseHeaders(response.responseHeaders)['mcp-session-id'] || sessionId
+    };
+  }
+
+  async function openMcpSession() {
+    const initialized = await sendMcpRpc('initialize', {
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: 'BYON', version: VERSION }
+    });
+    const negotiatedVersion = initialized.result?.protocolVersion || MCP_PROTOCOL_VERSION;
+    if (negotiatedVersion !== MCP_PROTOCOL_VERSION) {
+      // The server-selected version applies to the session; current Notion supports this revision.
+    }
+    await sendMcpRpc('notifications/initialized', undefined, initialized.sessionId, true);
+    const tools = [];
+    let cursor;
+    let sessionId = initialized.sessionId;
+    do {
+      const listed = await sendMcpRpc('tools/list', cursor ? { cursor } : {}, sessionId);
+      sessionId = listed.sessionId || sessionId;
+      tools.push(...(listed.result?.tools || []));
+      cursor = listed.result?.nextCursor;
+    } while (cursor);
+    return { sessionId, tools };
+  }
+
+  async function callMcpTool(session, name, argumentsObject) {
+    const called = await sendMcpRpc('tools/call', { name, arguments: argumentsObject || {} }, session.sessionId);
+    session.sessionId = called.sessionId || session.sessionId;
+    return called.result;
   }
 
   function activeProfile() {
@@ -492,20 +951,113 @@
     return document.querySelector('.notion-app-inner.notion-dark-theme, .notion-app-inner.notion-light-theme, .notion-app-inner, #notion-app') || document.body || document.documentElement;
   }
 
-  function ensureHost() {
+  function isNotionAiPath() {
+    return /^\/ai\/?$/.test(global.location.pathname);
+  }
+
+  function navigateToNotionAi() {
+    try { global.sessionStorage.setItem(FULL_PAGE_ROUTE_INTENT_KEY, '1'); } catch (_) { /* Navigation still works without session storage. */ }
+    if (panel) panel.hidden = true;
+    global.location.assign(new URL('/ai', global.location.origin).href);
+  }
+
+  function consumeFullPageRouteIntent() {
+    try {
+      const requested = global.sessionStorage.getItem(FULL_PAGE_ROUTE_INTENT_KEY) === '1';
+      global.sessionStorage.removeItem(FULL_PAGE_ROUTE_INTENT_KEY);
+      return requested;
+    } catch (_) { return false; }
+  }
+
+  function notionFullPageWorkspace() {
+    const surface = notionFullPageAiSurface();
+    let workspace = surface;
+    while (workspace?.parentElement) {
+      const parent = workspace.parentElement;
+      if (parent.querySelector(':scope > .notion-sidebar-container')) return workspace;
+      workspace = parent;
+    }
+    return null;
+  }
+
+  function restoreFullPageWorkspacePosition() {
+    if (!fullPageWorkspace) return;
+    fullPageWorkspace.style.position = fullPageWorkspaceInlinePosition;
+    fullPageWorkspace = null;
+    fullPageWorkspaceInlinePosition = '';
+  }
+
+  function mountHostForCurrentView() {
+    if (!host) return;
+    const workspace = viewMode === 'full' ? notionFullPageWorkspace() : null;
+    if (workspace) {
+      if (workspace !== fullPageWorkspace) {
+        restoreFullPageWorkspacePosition();
+        fullPageWorkspace = workspace;
+        fullPageWorkspaceInlinePosition = workspace.style.position;
+        if (getComputedStyle(workspace).position === 'static') workspace.style.position = 'relative';
+      }
+      const toolbar = workspace.querySelector('[role="toolbar"]');
+      const workspaceRect = workspace.getBoundingClientRect();
+      const toolbarBottom = toolbar ? toolbar.getBoundingClientRect().bottom - workspaceRect.top : 0;
+      host.style.cssText = `position:absolute;inset:${Math.max(0, Math.round(toolbarBottom))}px 0 0;z-index:2;pointer-events:none;`;
+      if (host.parentElement !== workspace) workspace.appendChild(host);
+      return;
+    }
+    restoreFullPageWorkspacePosition();
     const themeContainer = notionThemeContainer();
+    host.style.cssText = 'position:fixed;inset:0;z-index:2147483000;pointer-events:none;';
+    if (host.parentElement !== themeContainer) themeContainer.appendChild(host);
+  }
+
+  function handleByonKeydownBeforeNotion(event, target) {
+    if (target?.id === 'byon-composer' && event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendComposerMessage();
+      return;
+    }
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    if (historyOpen || plusOpen || modelOpen || modeOpen) {
+      historyOpen = plusOpen = modelOpen = modeOpen = false;
+      render();
+    } else closePanel();
+  }
+
+  function isolateByonInputFromNotion(event) {
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    if (!host || !path.includes(host)) return;
+    if (event.type === 'keydown') handleByonKeydownBeforeNotion(event, path[0]);
+    // Do not prevent normal browser editing or clipboard defaults. Stopping the
+    // composed event is enough to keep Notion's global editor handlers out.
+    event.stopImmediatePropagation();
+  }
+
+  function installInputIsolation() {
+    if (!inputIsolationInstalled) {
+      for (const type of ['keydown', 'keypress', 'keyup', 'paste', 'copy', 'cut']) {
+        global.addEventListener(type, isolateByonInputFromNotion, true);
+      }
+      inputIsolationInstalled = true;
+    }
+    for (const type of ['keydown', 'keypress', 'keyup', 'beforeinput', 'input', 'paste', 'copy', 'cut', 'compositionstart', 'compositionupdate', 'compositionend']) {
+      shadow.addEventListener(type, (event) => event.stopPropagation());
+    }
+  }
+
+  function ensureHost() {
     if (host && host.isConnected) {
-      if (host.parentElement !== themeContainer) themeContainer.appendChild(host);
+      mountHostForCurrentView();
       return;
     }
     host = document.createElement('div');
     host.id = 'byon-root';
-    host.style.cssText = 'position:fixed;inset:0;z-index:2147483000;pointer-events:none;';
     shadow = host.attachShadow({ mode: 'open' });
     shadow.innerHTML = `<style>${STYLES}</style><div id="byon-live" class="sr-only" aria-live="polite"></div><div id="byon-panel" class="panel" hidden></div>`;
+    installInputIsolation();
     // Mount inside Notion's themed application container so every current and
     // future Notion color token crosses the shadow-host boundary naturally.
-    themeContainer.appendChild(host);
+    mountHostForCurrentView();
     panel = shadow.getElementById('byon-panel');
   }
 
@@ -514,7 +1066,13 @@
     shadow.getElementById('byon-live').textContent = message;
   }
 
-  function openPanel(openSettings) {
+  function openPanel(openSettings, requestedMode = viewMode) {
+    const nextMode = requestedMode === 'full' ? 'full' : 'side';
+    if (nextMode === 'full' && !isNotionAiPath()) {
+      navigateToNotionAi();
+      return;
+    }
+    viewMode = nextMode;
     ensureHost();
     settingsOpen = Boolean(openSettings);
     historyOpen = false;
@@ -528,6 +1086,60 @@
 
   function closePanel() {
     if (panel) panel.hidden = true;
+    if (viewMode === 'full' || notionFullPageAiSurface()) suppressedFullPageUrl = global.location.href;
+  }
+
+  function setViewMode(mode) {
+    const nextMode = mode === 'full' ? 'full' : 'side';
+    if (nextMode === 'full' && !isNotionAiPath()) {
+      navigateToNotionAi();
+      return;
+    }
+    viewMode = nextMode;
+    ensureHost();
+    historyOpen = plusOpen = modelOpen = modeOpen = false;
+    render();
+    setTimeout(() => shadow.querySelector(settingsOpen ? '[data-field="profile-name"]' : '#byon-composer')?.focus(), 0);
+  }
+
+  function updateFullPageBounds() {
+    if (!panel || viewMode !== 'full' || !isNotionAiPath()) return;
+    if (viewMode === 'full' && notionFullPageWorkspace()) {
+      mountHostForCurrentView();
+      panel.style.removeProperty('--byon-full-left');
+      panel.style.removeProperty('--byon-full-right');
+      panel.style.removeProperty('--byon-full-top');
+      return;
+    }
+    const sidebar = document.querySelector('.notion-sidebar-container');
+    const toolbar = Array.from(document.querySelectorAll('[role="toolbar"]')).map((element) => ({ element, rect: element.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.width >= 600 && rect.height >= 32 && rect.height <= 64 && rect.top >= 0 && rect.top <= 8)
+      .sort((left, right) => right.rect.width - left.rect.width)[0]?.element || null;
+    if ((sidebar !== observedNotionSidebar || toolbar !== observedNotionToolbar) && typeof ResizeObserver !== 'undefined') {
+      if (!sidebarResizeObserver) sidebarResizeObserver = new ResizeObserver(updateFullPageBounds);
+      if (observedNotionSidebar) sidebarResizeObserver.unobserve(observedNotionSidebar);
+      if (observedNotionToolbar) sidebarResizeObserver.unobserve(observedNotionToolbar);
+      observedNotionSidebar = sidebar;
+      observedNotionToolbar = toolbar;
+      if (sidebar) sidebarResizeObserver.observe(sidebar);
+      if (toolbar) sidebarResizeObserver.observe(toolbar);
+    }
+    let left = 0;
+    let right = global.innerWidth;
+    let top = 0;
+    if (toolbar) {
+      const rect = toolbar.getBoundingClientRect();
+      left = Math.max(0, Math.round(rect.left));
+      right = Math.min(global.innerWidth, Math.round(rect.right));
+      top = Math.max(0, Math.round(rect.bottom));
+    } else if (sidebar) {
+      const rect = sidebar.getBoundingClientRect();
+      const visible = getComputedStyle(sidebar).display !== 'none' && getComputedStyle(sidebar).visibility !== 'hidden';
+      if (visible && rect.width > 0 && rect.width < global.innerWidth * 0.6) left = Math.round(rect.width);
+    }
+    panel.style.setProperty('--byon-full-left', `${left}px`);
+    panel.style.setProperty('--byon-full-right', `${Math.max(0, global.innerWidth - right)}px`);
+    panel.style.setProperty('--byon-full-top', `${top}px`);
   }
 
   function profileOptions() {
@@ -555,6 +1167,11 @@
     return Array.from(new Set([profile.model, ...(profile.discoveredModels || [])].filter(Boolean)));
   }
 
+  function profileModelContextInfo(profile, model) {
+    const discoveredLimit = Number(profile.modelMetadata?.[model]?.contextTokens) || null;
+    return discoveredLimit ? { tokens: discoveredLimit, label: formatContextLimit(discoveredLimit) } : modelContextInfo(model);
+  }
+
   function groupedModelRows(profile) {
     const query = modelSearch.trim().toLowerCase();
     const groups = new Map();
@@ -565,7 +1182,31 @@
       groups.get(group).push(model);
     }
     if (!groups.size) return '<div class="empty-small">No matching models. Discover models in settings or enter one manually.</div>';
-    return Array.from(groups.entries()).map(([group, models]) => `<section class="model-group"><div class="menu-section-label">${escapeHtml(group)}</div>${models.map((model) => `<button class="model-row ${model === profile.model ? 'selected' : ''}" data-model="${escapeHtml(model)}"><span class="model-logo">${escapeHtml(model.slice(0, 1).toUpperCase())}</span><span class="model-copy"><strong>${escapeHtml(model)}</strong><small>${model === profile.model ? 'Currently selected' : 'Available from your provider'}</small></span>${model === profile.model ? '<span class="check">✓</span>' : ''}</button>`).join('')}</section>`).join('');
+    return Array.from(groups.entries()).map(([group, models]) => `<section class="model-group"><div class="menu-section-label">${escapeHtml(group)}</div><div class="model-chip-list">${models.map((model) => { const info = profileModelContextInfo(profile, model); return `<button class="model-row ${model === profile.model ? 'selected' : ''}" data-model="${escapeHtml(model)}"><span class="model-logo">${escapeHtml(model.slice(0, 1).toUpperCase())}</span><span class="model-copy"><strong>${escapeHtml(model)}</strong><small>${escapeHtml(info.label)}</small></span>${model === profile.model ? '<span class="check">✓</span>' : ''}</button>`; }).join('')}</div></section>`).join('');
+  }
+
+  function contextUsage(profile, chat, draft = '') {
+    const history = (chat?.messages || []).map((message) => messageContentWithAttachments(message)).join('\n');
+    const attachments = attachmentsText(draftAttachments);
+    const extra = [profileSystemPrompt(profile), lastNotionSelection, includeVisiblePage ? pageContext().excerpt : '', draft, attachments].filter(Boolean).join('\n');
+    const used = estimatedTokenCount(`${history}\n${extra}`);
+    const info = profileModelContextInfo(profile, profile.model);
+    const limit = info.tokens || 128000;
+    const ratio = Math.min(1, used / limit);
+    const level = ratio >= .9 ? 'danger' : ratio >= .7 ? 'warning' : 'safe';
+    return { used, limit, ratio, level, assumed: !info.tokens };
+  }
+
+  function updateContextMeter(draft = '') {
+    const meter = shadow?.querySelector('.context-meter');
+    if (!meter) return;
+    const usage = contextUsage(activeProfile(), activeChat(), draft);
+    meter.className = `context-meter ${usage.level}`;
+    meter.title = `${usage.used.toLocaleString()} estimated tokens of ${usage.limit.toLocaleString()}${usage.assumed ? ' assumed fallback' : ''}`;
+    meter.setAttribute('aria-label', meter.title);
+    meter.setAttribute('aria-valuenow', String(usage.used));
+    meter.setAttribute('aria-valuemax', String(usage.limit));
+    meter.querySelector('.context-meter-fill').style.width = `${Math.max(2, usage.ratio * 100)}%`;
   }
 
   function byonIcon(className = 'byon-icon') {
@@ -578,6 +1219,8 @@
       plus: '<path d="M10 3.25a.75.75 0 0 1 .75.75v5.25H16a.75.75 0 0 1 0 1.5h-5.25V16a.75.75 0 0 1-1.5 0v-5.25H4a.75.75 0 0 1 0-1.5h5.25V4a.75.75 0 0 1 .75-.75"/>',
       more: '<path d="M4.25 8.75a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5m5.75 0a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5m5.75 0a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5"/>',
       collapse: '<path d="M7.8 4.15a.625.625 0 0 1 .05.88L3.33 10l4.52 4.97a.625.625 0 1 1-.92.84l-4.9-5.39a.625.625 0 0 1 0-.84l4.9-5.38a.625.625 0 0 1 .88-.05m5 0a.625.625 0 0 1 .05.88L8.33 10l4.52 4.97a.625.625 0 1 1-.92.84l-4.9-5.39a.625.625 0 0 1 0-.84l4.9-5.38a.625.625 0 0 1 .88-.05"/>',
+      expand: '<path d="M4 3.25h4a.75.75 0 0 1 0 1.5H4.75V8a.75.75 0 0 1-1.5 0V4A.75.75 0 0 1 4 3.25m8 0h4a.75.75 0 0 1 .75.75v4a.75.75 0 0 1-1.5 0V4.75H12a.75.75 0 0 1 0-1.5M4 11.25a.75.75 0 0 1 .75.75v3.25H8a.75.75 0 0 1 0 1.5H4a.75.75 0 0 1-.75-.75v-4a.75.75 0 0 1 .75-.75m12 0a.75.75 0 0 1 .75.75v4a.75.75 0 0 1-.75.75h-4a.75.75 0 0 1 0-1.5h3.25V12a.75.75 0 0 1 .75-.75"/>',
+      shrink: '<path d="M8 3.25a.75.75 0 0 1 .75.75v3.25H12a.75.75 0 0 1 0 1.5H8a.75.75 0 0 1-.75-.75V4A.75.75 0 0 1 8 3.25m4 8a.75.75 0 0 1 .75.75v4a.75.75 0 0 1-1.5 0v-3.25H8a.75.75 0 0 1 0-1.5zM4 11.25h4a.75.75 0 0 1 .75.75v4a.75.75 0 0 1-1.5 0v-3.25H4a.75.75 0 0 1 0-1.5m12-8a.75.75 0 0 1 0 1.5h-3.25V8a.75.75 0 0 1-1.5 0V4a.75.75 0 0 1 .75-.75z"/>',
       chevronDown: '<path d="M4.2 7.3a.7.7 0 0 1 .99-.1L10 11.22l4.81-4.02a.7.7 0 1 1 .9 1.08l-5.26 4.39a.7.7 0 0 1-.9 0L4.29 8.28a.7.7 0 0 1-.09-.98"/>',
       tune: '<path d="M4 4.25h5.25a.75.75 0 0 1 0 1.5H4a.75.75 0 0 1 0-1.5m9.75 0H16a.75.75 0 0 1 0 1.5h-2.25a.75.75 0 0 1 0-1.5M4 9.25h2.25a.75.75 0 0 1 0 1.5H4a.75.75 0 0 1 0-1.5m6.75 0H16a.75.75 0 0 1 0 1.5h-5.25a.75.75 0 0 1 0-1.5M4 14.25h5.25a.75.75 0 0 1 0 1.5H4a.75.75 0 0 1 0-1.5m9.75 0H16a.75.75 0 0 1 0 1.5h-2.25a.75.75 0 0 1 0-1.5"/><circle cx="11.5" cy="5" r="1.5"/><circle cx="8.5" cy="10" r="1.5"/><circle cx="11.5" cy="15" r="1.5"/>',
       upload: '<path d="M10 2.75a.75.75 0 0 1 .53.22l3 3a.75.75 0 1 1-1.06 1.06l-1.72-1.72v6.94a.75.75 0 0 1-1.5 0V5.31L7.53 7.03a.75.75 0 0 1-1.06-1.06l3-3a.75.75 0 0 1 .53-.22M4 12.5a.75.75 0 0 1 .75.75V16h10.5v-2.75a.75.75 0 0 1 1.5 0V16A1.5 1.5 0 0 1 15.25 17.5H4.75A1.5 1.5 0 0 1 3.25 16v-2.75A.75.75 0 0 1 4 12.5"/>',
@@ -609,7 +1252,9 @@
   }
 
   function settingsHtml(profile) {
-    const headersText = typeof profile.mcpHeaders === 'string' ? profile.mcpHeaders : JSON.stringify(profile.mcpHeaders || {}, null, 2);
+    const connection = state.notionMcp;
+    const headersText = typeof connection.headers === 'string' ? connection.headers : JSON.stringify(connection.headers || {}, null, 2);
+    const connected = connection.authMode === 'none' || Boolean(connection.accessToken);
     return `<div class="settings-view">
       <div class="settings-title"><button class="icon-button" data-action="close-settings" aria-label="Back to chat">${iconSvg('arrowLeft')}</button><h2>BYON settings</h2></div>
       <p class="notice">API keys are masked here but stored unencrypted in your userscript manager. Requests are sent without Notion cookies.</p>
@@ -627,9 +1272,11 @@
       ${profile.authMode !== 'none' ? `<label>API key<input data-field="api-key" type="password" value="${escapeHtml(profile.apiKey)}" autocomplete="off"></label>` : ''}
       <label>System prompt<textarea data-field="system-prompt" rows="4">${escapeHtml(profile.systemPrompt)}</textarea></label>
       <fieldset><legend>Notion MCP</legend>
-        <label>Mode<select data-field="mcp-mode"><option value="off" ${profile.mcpMode === 'off' ? 'selected' : ''}>Off</option><option value="backend_preconfigured" ${profile.mcpMode === 'backend_preconfigured' ? 'selected' : ''}>Already configured in backend</option><option value="responses_remote" ${profile.mcpMode === 'responses_remote' ? 'selected' : ''}>Responses remote MCP</option></select></label>
-        ${profile.mcpMode === 'backend_preconfigured' ? '<p class="notice">Your backend owns the MCP tool loop. BYON injects guidance but cannot enforce tool approvals in this mode.</p>' : ''}
-        ${profile.mcpMode === 'responses_remote' ? `<p class="notice">Requires the Responses API. Every MCP call requests approval. Responses are stored by the provider so approval continuations can reference them. BYON does not implement Notion OAuth; provide a token or an authenticated gateway.</p><label>MCP URL<input data-field="mcp-url" value="${escapeHtml(profile.mcpUrl)}"></label><label>Server label<input data-field="mcp-label" value="${escapeHtml(profile.mcpServerLabel)}"></label><label>OAuth access token<input data-field="mcp-authorization" type="password" value="${escapeHtml(profile.mcpAuthorization)}" autocomplete="off"></label><label>Additional headers (JSON)<textarea data-field="mcp-headers" rows="3">${escapeHtml(headersText)}</textarea></label>` : ''}
+        <label class="checkbox"><input data-field="mcp-enabled" type="checkbox" ${profile.mcpEnabled ? 'checked' : ''}> Let this profile use Notion tools</label>
+        <p class="notice">BYON connects to Notion MCP itself, gives its tools to your model as standard function calls, and asks before every call. Your model endpoint must support function calling.</p>
+        <div class="connection-status ${connected ? 'connected' : ''}"><span class="status-dot"></span><span>${connected ? `Ready${connection.connectedAt ? ` · connected ${escapeHtml(new Date(connection.connectedAt).toLocaleDateString())}` : ''}` : 'Not connected'}</span></div>
+        ${connection.authMode === 'oauth' ? `<div class="row"><button data-action="${connected ? 'disconnect-notion' : 'connect-notion'}" class="${connected ? '' : 'primary'}">${connected ? 'Disconnect Notion' : 'Connect Notion'}</button>${connected ? '<button data-action="test-mcp">Test tools</button>' : ''}</div>` : `<div class="row"><button data-action="test-mcp">Test tools</button>${connection.accessToken ? '<button data-action="disconnect-notion">Clear credentials</button>' : ''}</div>`}
+        <details><summary>Advanced connection</summary><label>MCP HTTP URL<input data-field="mcp-url" value="${escapeHtml(connection.serverUrl)}"></label><label>Authentication<select data-field="mcp-auth-mode"><option value="oauth" ${connection.authMode === 'oauth' ? 'selected' : ''}>OAuth with PKCE</option><option value="bearer" ${connection.authMode === 'bearer' ? 'selected' : ''}>Bearer token</option><option value="none" ${connection.authMode === 'none' ? 'selected' : ''}>No authentication</option></select></label>${connection.authMode === 'bearer' ? `<label>MCP bearer token<input data-field="mcp-access-token" type="password" value="${escapeHtml(connection.accessToken)}" autocomplete="off"></label>` : ''}<label>Additional headers (JSON)<textarea data-field="mcp-headers" rows="3">${escapeHtml(headersText)}</textarea></label><p class="notice">Userscripts cannot launch stdio processes. For a local stdio MCP server, run an HTTP bridge and enter its Streamable HTTP URL here.</p></details>
       </fieldset>
       <label class="checkbox"><input data-field="replacement-enabled" type="checkbox" ${state.settings.replacementEnabled ? 'checked' : ''}> Replace Notion’s Ask AI button with Ask BYON</label>
       <div class="row"><button class="primary" data-action="save-settings">Save settings</button><button data-action="test-connection">Test connection</button></div>
@@ -642,23 +1289,29 @@
     if (panel.hidden) return;
     const profile = activeProfile();
     const chat = activeChat();
-    panel.style.width = `${state.settings.panelWidth}px`;
-    if (settingsOpen) {
-      panel.innerHTML = `<div class="resize-handle" aria-hidden="true"></div>${settingsHtml(profile)}`;
+    const usage = contextUsage(profile, chat);
+    const hasMessages = Boolean(chat?.messages.length);
+    panel.className = `panel ${viewMode === 'full' ? 'full-page' : 'side-panel'} ${hasMessages ? 'has-chat' : 'start-chat'} ${settingsOpen ? 'showing-settings' : ''}`;
+    panel.style.width = viewMode === 'full' ? '' : `${state.settings.panelWidth}px`;
+    updateFullPageBounds();
+    if (settingsOpen && viewMode !== 'full') {
+      panel.innerHTML = `<div class="resize-handle" aria-hidden="true"></div><div class="settings-shell">${settingsHtml(profile)}</div>`;
       bindPanelEvents();
       return;
     }
     panel.innerHTML = `<div class="resize-handle" aria-hidden="true"></div>
+      <div class="chat-shell">
       <header class="panel-header">
         <button class="chat-title-button" data-action="toggle-history" aria-expanded="${historyOpen}" aria-haspopup="dialog">${byonIcon('header-icon')}<span>${escapeHtml(chat?.title || 'New chat')}</span>${iconSvg('chevronDown', 'chevron-icon')}</button>
         <div class="header-actions">
           <button class="icon-button" data-action="new-chat" aria-label="New chat" title="New chat">${iconSvg('plus')}</button>
+          <button class="icon-button" data-action="toggle-view-mode" aria-label="${viewMode === 'full' ? 'Use side panel' : 'Open full page'}" title="${viewMode === 'full' ? 'Use side panel' : 'Open full page'}">${iconSvg(viewMode === 'full' ? 'shrink' : 'expand')}</button>
           <button class="icon-button" data-action="open-settings" aria-label="BYON settings" title="BYON settings">${iconSvg('more')}</button>
-          <button class="icon-button" data-action="close-panel" aria-label="Close BYON" title="Close panel">${iconSvg('collapse')}</button>
+          ${viewMode === 'full' ? '' : `<button class="icon-button" data-action="close-panel" aria-label="Close BYON" title="Close panel">${iconSvg('collapse')}</button>`}
         </div>
       </header>
       ${historyOpen ? `<div class="notion-popover chat-popover" role="dialog" aria-label="Select a chat"><label class="popover-search" for="chat-search">${iconSvg('search')}<input id="chat-search" value="${escapeHtml(chatSearch)}" placeholder="Search chats" autocomplete="off"></label><div class="menu-section-label">Today</div><div class="popover-scroll">${chatRows()}</div><div class="popover-footer"><button data-action="new-chat">${iconSvg('plus')}<span>New chat</span></button><button data-action="clear-history" class="danger-link">Clear history</button></div></div>` : ''}
-      <main id="message-list" class="messages">${chat?.messages.length ? chat.messages.map(messageHtml).join('') : `<div class="landing">${byonIcon('landing-icon')}<h1>How can I help you today?</h1><p>Chatting with <strong>${escapeHtml(profile.model || profile.name)}</strong></p></div>`}</main>
+      <main id="message-list" class="messages"><div class="message-column">${hasMessages ? chat.messages.map(messageHtml).join('') : `<div class="landing">${byonIcon('landing-icon')}<h1>How can I help you today?</h1><p>Chatting with <strong>${escapeHtml(profile.model || profile.name)}</strong></p></div>`}</div></main>
       <footer class="composer-area">
         <div class="composer-wrap">
           ${(draftAttachments.length || includeVisiblePage || lastNotionSelection) ? `<div class="attachment-row">${attachmentChips()}${includeVisiblePage ? `<span class="attachment-chip context-attachment">${iconSvg('file')}<span>Visible page</span><button data-action="toggle-page-context" aria-label="Remove visible page context">×</button></span>` : ''}${lastNotionSelection ? `<span class="attachment-chip context-attachment">${iconSvg('file')}<span>Selection</span></span>` : ''}</div>` : ''}
@@ -666,20 +1319,23 @@
           <div class="composer-toolbar">
             <div class="toolbar-left">
               <button class="round-tool" data-action="toggle-plus" aria-label="Add files or page context" aria-expanded="${plusOpen}">${iconSvg('plus')}</button>
-              <button class="round-tool" data-action="toggle-mode" aria-label="Choose chat mode" aria-expanded="${modeOpen}">${iconSvg('tune')}</button>
+              <button class="round-tool" data-action="${viewMode === 'full' ? 'open-settings' : 'toggle-mode'}" aria-label="${viewMode === 'full' ? 'BYON settings' : 'Choose chat mode'}" aria-expanded="${viewMode === 'full' ? settingsOpen : modeOpen}">${iconSvg('tune')}</button>
             </div>
             <div class="toolbar-right">
+              <span class="context-meter ${usage.level}" role="progressbar" aria-valuemin="0" aria-valuemax="${usage.limit}" aria-valuenow="${usage.used}" aria-label="${usage.used.toLocaleString()} estimated tokens of ${usage.limit.toLocaleString()}${usage.assumed ? ' assumed fallback' : ''}" title="${usage.used.toLocaleString()} estimated tokens of ${usage.limit.toLocaleString()}${usage.assumed ? ' assumed fallback' : ''}"><span class="context-meter-fill" style="width:${Math.max(2, usage.ratio * 100)}%"></span></span>
               <button class="model-button" data-action="toggle-models" aria-haspopup="listbox" aria-expanded="${modelOpen}"><span class="model-name">${escapeHtml(profile.model || 'Select model')}</span>${iconSvg('chevronDown', 'chevron-icon')}</button>
-              ${currentRequest ? `<button class="send stop" data-action="stop-request" aria-label="Stop response">${iconSvg('stop')}</button>` : `<button class="send" data-action="send-message" aria-label="Send message">${iconSvg('send')}</button>`}
+              ${currentRequest || mcpOperationActive ? `<button class="send stop" data-action="stop-request" aria-label="Stop response">${iconSvg('stop')}</button>` : `<button class="send" data-action="send-message" aria-label="Send message">${iconSvg('send')}</button>`}
             </div>
           </div>
         </div>
         <input id="file-picker" type="file" hidden multiple accept="text/*,.txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.html,.htm,.xml,.yaml,.yml,.toml,.ini,.log,.sql,.css,.js,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.c,.h,.cpp,.hpp,.sh,.ps1,.bat,.tex,.rst,.rtf">
         ${plusOpen ? `<div class="notion-popover plus-popover" role="menu"><button class="menu-row-button" data-action="pick-files"><span class="menu-icon">${iconSvg('upload')}</span><span><strong>Add text files</strong><small>HTML, Markdown, CSV, code, logs, and more</small></span></button><button class="menu-row-button ${includeVisiblePage ? 'selected' : ''}" data-action="toggle-page-context"><span class="menu-icon mention-icon">@</span><span><strong>${includeVisiblePage ? 'Remove visible page' : 'Mention current page'}</strong><small>Attach currently rendered Notion blocks</small></span>${includeVisiblePage ? '<span class="check">✓</span>' : ''}</button></div>` : ''}
         ${modelOpen ? `<div class="notion-popover model-popover" role="listbox"><label class="popover-search" for="model-search">${iconSvg('search')}<input id="model-search" value="${escapeHtml(modelSearch)}" placeholder="Search models" autocomplete="off"></label><div class="popover-scroll">${groupedModelRows(profile)}</div><div class="popover-footer"><button data-action="open-settings">${iconSvg('settings')}<span>Manage providers and models</span></button></div></div>` : ''}
-        ${modeOpen ? `<div class="notion-popover mode-popover" role="menu"><div class="menu-section-label">API mode</div><button class="mode-row ${profile.apiType === 'chat_completions' ? 'selected' : ''}" data-api-mode="chat_completions"><span class="menu-icon mode-glyph">C</span><span><strong>Chat Completions</strong><small>Broad OpenAI-compatible support</small></span>${profile.apiType === 'chat_completions' ? '<span class="check">✓</span>' : ''}</button><button class="mode-row ${profile.apiType === 'responses' ? 'selected' : ''}" data-api-mode="responses"><span class="menu-icon mode-glyph">R</span><span><strong>Responses</strong><small>Required for remote MCP tools</small></span>${profile.apiType === 'responses' ? '<span class="check">✓</span>' : ''}</button><div class="popover-divider"></div><button class="mode-row" data-action="open-settings"><span class="menu-icon">${iconSvg('settings')}</span><span><strong>BYON settings</strong><small>Provider, authentication, and Notion MCP</small></span>${iconSvg('chevronRight', 'chevron-icon')}</button></div>` : ''}
+        ${modeOpen ? `<div class="notion-popover mode-popover" role="menu"><div class="menu-section-label">API mode</div><button class="mode-row ${profile.apiType === 'chat_completions' ? 'selected' : ''}" data-api-mode="chat_completions"><span class="menu-icon mode-glyph">C</span><span><strong>Chat Completions</strong><small>Broad OpenAI-compatible support</small></span>${profile.apiType === 'chat_completions' ? '<span class="check">✓</span>' : ''}</button><button class="mode-row ${profile.apiType === 'responses' ? 'selected' : ''}" data-api-mode="responses"><span class="menu-icon mode-glyph">R</span><span><strong>Responses</strong><small>Responses-compatible backends</small></span>${profile.apiType === 'responses' ? '<span class="check">✓</span>' : ''}</button><div class="popover-divider"></div><button class="mode-row" data-action="open-settings"><span class="menu-icon">${iconSvg('settings')}</span><span><strong>BYON settings</strong><small>Provider, authentication, and Notion MCP</small></span>${iconSvg('chevronRight', 'chevron-icon')}</button></div>` : ''}
         <div class="disclaimer">AI can make mistakes. Review Notion tool calls before approval.</div>
-      </footer>`;
+      </footer>
+      </div>
+      ${settingsOpen ? `<aside class="full-settings-sidebar" aria-label="BYON settings sidebar">${settingsHtml(profile)}</aside>` : ''}`;
     bindPanelEvents();
     const list = shadow.getElementById('message-list');
     if (list) list.scrollTop = list.scrollHeight;
@@ -694,6 +1350,7 @@
       }
       const action = button.dataset.action;
       if (action === 'close-panel') closePanel();
+      if (action === 'toggle-view-mode') setViewMode(viewMode === 'full' ? 'side' : 'full');
       if (action === 'open-settings') { settingsOpen = true; historyOpen = plusOpen = modelOpen = modeOpen = false; render(); }
       if (action === 'close-settings') { settingsOpen = false; render(); }
       if (action === 'toggle-history') { historyOpen = !historyOpen; plusOpen = modelOpen = modeOpen = false; render(); }
@@ -711,6 +1368,9 @@
       if (action === 'save-settings') saveSettingsForm();
       if (action === 'test-connection') testConnection();
       if (action === 'discover-models') discoverModels();
+      if (action === 'connect-notion') connectNotion();
+      if (action === 'disconnect-notion') disconnectNotion();
+      if (action === 'test-mcp') testMcpConnection();
       if (button.dataset.chatId) { state.activeChatId = button.dataset.chatId; historyOpen = false; persist(); render(); }
       if (button.dataset.model) { activeProfile().model = button.dataset.model; modelOpen = false; persist(); render(); announce(`Model changed to ${button.dataset.model}`); }
       if (button.dataset.apiMode) { activeProfile().apiType = button.dataset.apiMode; modeOpen = false; persist(); render(); }
@@ -727,11 +1387,12 @@
         persist(); render();
       }
       if (event.target.dataset.field === 'auth-mode') { activeProfile().authMode = event.target.value; collectSettingsForm(); render(); }
-      if (event.target.dataset.field === 'mcp-mode') { activeProfile().mcpMode = event.target.value; collectSettingsForm(); render(); }
+      if (event.target.dataset.field === 'mcp-auth-mode') { state.notionMcp.authMode = event.target.value; collectSettingsForm(); render(); }
       if (event.target.id === 'quick-model') { activeProfile().model = event.target.value; persist(); announce(`Model changed to ${event.target.value}`); }
       if (event.target.id === 'file-picker') readSelectedFiles(event.target.files);
     };
     panel.oninput = (event) => {
+      if (event.target.id === 'byon-composer') updateContextMeter(event.target.value);
       if (event.target.id === 'chat-search') {
         chatSearch = event.target.value;
         const position = chatSearch.length;
@@ -745,15 +1406,6 @@
         render();
         const input = shadow.getElementById('model-search');
         input?.focus(); input?.setSelectionRange(position, position);
-      }
-    };
-    panel.onkeydown = (event) => {
-      if (event.target.id === 'byon-composer' && event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault(); sendComposerMessage();
-      }
-      if (event.key === 'Escape') {
-        if (historyOpen || plusOpen || modelOpen || modeOpen) { historyOpen = plusOpen = modelOpen = modeOpen = false; render(); }
-        else closePanel();
       }
     };
     const handle = panel.querySelector('.resize-handle');
@@ -792,11 +1444,12 @@
     if (value('header-name') != null) profile.headerName = value('header-name').trim();
     if (value('header-prefix') != null) profile.headerPrefix = value('header-prefix');
     if (value('system-prompt') != null) profile.systemPrompt = value('system-prompt');
-    if (value('mcp-mode') != null) profile.mcpMode = value('mcp-mode');
-    if (value('mcp-url') != null) profile.mcpUrl = value('mcp-url').trim();
-    if (value('mcp-label') != null) profile.mcpServerLabel = value('mcp-label').trim();
-    if (value('mcp-authorization') != null) profile.mcpAuthorization = value('mcp-authorization');
-    if (value('mcp-headers') != null) profile.mcpHeaders = value('mcp-headers');
+    const mcpEnabled = panel.querySelector('[data-field="mcp-enabled"]');
+    if (mcpEnabled) profile.mcpEnabled = mcpEnabled.checked;
+    if (value('mcp-url') != null) state.notionMcp.serverUrl = value('mcp-url').trim();
+    if (value('mcp-auth-mode') != null) state.notionMcp.authMode = value('mcp-auth-mode');
+    if (value('mcp-access-token') != null) state.notionMcp.accessToken = value('mcp-access-token');
+    if (value('mcp-headers') != null) state.notionMcp.headers = value('mcp-headers');
     const replacement = panel.querySelector('[data-field="replacement-enabled"]');
     if (replacement) state.settings.replacementEnabled = replacement.checked;
   }
@@ -809,13 +1462,105 @@
       endpointFor(profile, 'chat');
       authHeaders(profile);
       if (!profile.model) throw new Error('Enter a model ID.');
-      if (profile.mcpMode === 'responses_remote' && profile.apiType !== 'responses') throw new Error('Remote MCP requires the Responses API type.');
-      profile.mcpHeaders = parseHeaderObject(profile.mcpHeaders);
+      state.notionMcp.headers = parseHeaderObject(state.notionMcp.headers);
+      if (profile.mcpEnabled && state.notionMcp.authMode !== 'none' && !state.notionMcp.accessToken) throw new Error('Connect Notion or enter MCP credentials before enabling Notion tools for this profile.');
       await persist();
       applyTriggerReplacement();
       status.textContent = 'Settings saved.';
       announce('BYON settings saved');
-    } catch (error) { status.textContent = redactSecret(error.message, secretsForProfile(activeProfile())); }
+    } catch (error) { status.textContent = redactSecret(error.message, secretsForProfile(activeProfile(), state.notionMcp)); }
+  }
+
+  async function connectNotion() {
+    const status = panel.querySelector('#settings-status');
+    try {
+      collectSettingsForm();
+      const connection = state.notionMcp;
+      connection.serverUrl = connection.serverUrl || DEFAULT_MCP_URL;
+      connection.headers = parseHeaderObject(connection.headers);
+      status.textContent = 'Discovering Notion authorization…';
+      const metadata = await discoverMcpOAuth(connection.serverUrl);
+      const redirectUri = `${global.location.origin}/`;
+      let registration = { client_id: connection.clientId, client_secret: connection.clientSecret };
+      if (!registration.client_id || connection.redirectUri !== redirectUri) {
+        status.textContent = 'Registering BYON as an MCP client…';
+        registration = await registerMcpOAuthClient(metadata, redirectUri);
+      }
+      const verifier = randomBase64Url(48);
+      const oauthState = randomBase64Url(32);
+      connection.clientId = registration.client_id;
+      connection.clientSecret = registration.client_secret || '';
+      connection.authorizationEndpoint = metadata.authorization_endpoint;
+      connection.tokenEndpoint = metadata.token_endpoint;
+      connection.registrationEndpoint = metadata.registration_endpoint || '';
+      connection.redirectUri = redirectUri;
+      connection.pendingOAuth = {
+        state: oauthState,
+        verifier,
+        createdAt: Date.now(),
+        returnUrl: global.location.href
+      };
+      await persist();
+      const authorizationUrl = new URL(metadata.authorization_endpoint);
+      authorizationUrl.searchParams.set('response_type', 'code');
+      authorizationUrl.searchParams.set('client_id', connection.clientId);
+      authorizationUrl.searchParams.set('redirect_uri', redirectUri);
+      authorizationUrl.searchParams.set('state', oauthState);
+      authorizationUrl.searchParams.set('code_challenge', await pkceChallenge(verifier));
+      authorizationUrl.searchParams.set('code_challenge_method', 'S256');
+      authorizationUrl.searchParams.set('prompt', 'consent');
+      global.location.assign(authorizationUrl.href);
+    } catch (error) {
+      status.textContent = redactSecret(error.message, secretsForProfile(activeProfile(), state.notionMcp));
+    }
+  }
+
+  async function handleMcpOAuthCallback() {
+    const parameters = new URLSearchParams(global.location.search);
+    const pending = state.notionMcp.pendingOAuth;
+    if (!pending || (!parameters.has('code') && !parameters.has('error'))) return false;
+    if (Date.now() - Number(pending.createdAt || 0) > 10 * 60 * 1000) throw new Error('Notion authorization expired. Start the connection again.');
+    if (parameters.get('state') !== pending.state) throw new Error('Notion authorization state did not match. Connection cancelled for safety.');
+    if (parameters.has('error')) throw new Error(`Notion authorization failed: ${parameters.get('error_description') || parameters.get('error')}`);
+    await exchangeMcpOAuthToken(state.notionMcp, {
+      grant_type: 'authorization_code',
+      code: parameters.get('code'),
+      redirect_uri: state.notionMcp.redirectUri,
+      code_verifier: pending.verifier
+    });
+    await persist();
+    const returnUrl = pending.returnUrl;
+    global.history.replaceState(global.history.state, '', `${global.location.pathname}${global.location.hash}`);
+    if (returnUrl && new URL(returnUrl).origin === global.location.origin && returnUrl !== global.location.href) {
+      global.location.assign(returnUrl);
+      return true;
+    }
+    return true;
+  }
+
+  async function disconnectNotion() {
+    const connection = state.notionMcp;
+    Object.assign(connection, {
+      accessToken: '', refreshToken: '', expiresAt: 0, pendingOAuth: null, connectedAt: ''
+    });
+    for (const profile of state.profiles) profile.mcpEnabled = false;
+    await persist();
+    render();
+    announce('Notion disconnected');
+  }
+
+  async function testMcpConnection() {
+    const status = panel.querySelector('#settings-status');
+    try {
+      collectSettingsForm();
+      state.notionMcp.headers = parseHeaderObject(state.notionMcp.headers);
+      status.textContent = 'Loading Notion tools…';
+      const session = await openMcpSession();
+      status.textContent = `Connected. ${session.tools.length} Notion tool${session.tools.length === 1 ? '' : 's'} available.`;
+      await persist();
+    } catch (error) {
+      status.textContent = redactSecret(error.message, secretsForProfile(activeProfile(), state.notionMcp));
+    }
   }
 
   function addProfile() {
@@ -859,7 +1604,7 @@
   function sendComposerMessage() {
     const composer = shadow.getElementById('byon-composer');
     const content = composer?.value.trim() || (draftAttachments.length ? 'Use the attached text file(s) to help with this request.' : '');
-    if (!content || currentRequest) return;
+    if (!content || currentRequest || mcpOperationActive) return;
     const profile = activeProfile();
     if (!profile.model || !profile.baseUrl) {
       openPanel(true);
@@ -887,20 +1632,22 @@
     performCompletion(chat, assistant, pageContext());
   }
 
-  function performCompletion(chat, assistant, context, continuation) {
+  function performCompletion(chat, assistant, context) {
     const profile = activeProfile();
+    if (profile.mcpEnabled) {
+      performMcpCompletion(chat, assistant, context);
+      return;
+    }
     const messages = chat.messages.filter((message) => message.id !== assistant.id).map(({ role, content, attachments }) => ({ role, content, attachments }));
     let body;
     try {
       body = profile.apiType === 'responses'
-        ? buildResponsesBody(profile, messages, context, continuation)
+        ? buildResponsesBody(profile, messages, context)
         : buildChatCompletionsBody(profile, messages, context);
     } catch (error) { finishWithError(assistant, error); return; }
     let offset = 0;
     let accumulated = '';
     let lastText = '';
-    let responseId = continuation?.responseId || null;
-    let pendingApproval = null;
     let sawSse = false;
     const processText = (responseText) => {
       if (!responseText || responseText === lastText) return;
@@ -909,12 +1656,8 @@
       offset = parsed.offset;
       for (const event of parsed.events) {
         sawSse = true;
-        responseId = responseId || event.response?.id || event.response_id || null;
         const delta = profile.apiType === 'responses' ? responseDeltaFromEvent(event) : chatDeltaFromEvent(event);
         if (delta) { accumulated += delta; assistant.content = accumulated; throttledRender(); }
-        const payloadApprovals = approvalsFromResponsePayload(event);
-        if (payloadApprovals.length) pendingApproval = payloadApprovals[0];
-        if (event.item?.type === 'mcp_approval_request') pendingApproval = event.item;
       }
     };
     try {
@@ -936,16 +1679,13 @@
           if (!sawSse) {
             try {
               accumulated = extractBufferedText(profile, response.responseText);
-              const payload = JSON.parse(response.responseText);
-              responseId = responseId || payload.id;
-              pendingApproval = pendingApproval || approvalsFromResponsePayload(payload)[0];
+              JSON.parse(response.responseText);
             } catch (error) { finishWithError(assistant, new Error(`Could not parse provider response: ${error.message}`)); return; }
           }
           assistant.content = accumulated;
           assistant.pending = false;
           chat.updatedAt = nowIso();
           await persist(); render();
-          if (pendingApproval) requestApproval(chat, assistant, context, responseId, pendingApproval);
         },
         onerror: () => { currentRequest = null; finishWithError(assistant, new Error('Network request failed. Check the endpoint, manager host permission, and connection.')); },
         ontimeout: () => { currentRequest = null; finishWithError(assistant, new Error('The provider request timed out after 120 seconds.')); },
@@ -954,6 +1694,177 @@
       currentRequest = request;
       render();
     } catch (error) { finishWithError(assistant, error); }
+  }
+
+  async function requestProviderPayload(profile, body) {
+    const response = await gmRequest({
+      method: 'POST',
+      url: endpointFor(profile, 'chat'),
+      headers: authHeaders(profile),
+      data: JSON.stringify(body)
+    });
+    if (response.status < 200 || response.status >= 300) {
+      const detail = response.responseText || response.statusText || 'Request failed';
+      throw new Error(`HTTP ${response.status}: ${detail}`);
+    }
+    try { return JSON.parse(response.responseText); }
+    catch (error) { throw new Error(`Could not parse provider response: ${error.message}`); }
+  }
+
+  function parseToolArguments(value) {
+    if (!value) return {};
+    if (typeof value === 'object') return value;
+    try {
+      const parsed = JSON.parse(value);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('arguments must be an object');
+      return parsed;
+    } catch (error) { throw new Error(`The model returned invalid tool arguments: ${error.message}`); }
+  }
+
+  function mcpResultForModel(result) {
+    const serialized = JSON.stringify(result == null ? { content: [] } : result);
+    return serialized.length > MAX_MCP_RESULT_CHARS
+      ? `${serialized.slice(0, MAX_MCP_RESULT_CHARS)}\n[Notion MCP result truncated by BYON.]`
+      : serialized;
+  }
+
+  async function performMcpCompletion(chat, assistant, context) {
+    const profile = activeProfile();
+    const operationId = ++currentOperationId;
+    mcpOperationActive = true;
+    if (state.notionMcp.authMode !== 'none' && !state.notionMcp.accessToken) {
+      finishWithError(assistant, new Error('Notion tools are enabled, but Notion is not connected. Open BYON settings and connect Notion.'));
+      mcpOperationActive = false;
+      return;
+    }
+    try {
+      assistant.content = 'Connecting to Notion tools…';
+      render();
+      const session = await openMcpSession();
+      if (stoppedOperationId === operationId) throw new Error('Request stopped.');
+      if (!session.tools.length) throw new Error('Notion MCP connected but returned no tools. Reconnect Notion or check workspace permissions.');
+      const conversation = chat.messages
+        .filter((message) => message.id !== assistant.id)
+        .map(({ role, content, attachments }) => ({ role, content, attachments }));
+      const recentUserText = conversation.filter((message) => message.role === 'user').slice(-3).map((message) => message.content).join('\n');
+      const selectedTools = selectMcpToolsForTurn(session.tools, recentUserText);
+      let schemaMode = 'normalized';
+      let definitions = mcpFunctionDefinitions(selectedTools, profile.apiType);
+      let toolsByWireName = new Map(definitions.map((definition) => [definition.wireName, definition]));
+      let modelTools = definitions.map((definition) => definition.modelTool);
+      let finalText = '';
+      let stalledToolContinuations = 0;
+      let requireToolCall = false;
+      for (let round = 0; round < MAX_MCP_TOOL_ROUNDS; round += 1) {
+        if (stoppedOperationId === operationId) throw new Error('Request stopped.');
+        assistant.content = round ? 'Working with Notion…' : 'Thinking…';
+        render();
+        const body = profile.apiType === 'responses'
+          ? buildResponsesBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined })
+          : buildChatCompletionsBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined });
+        let payload;
+        try { payload = await requestProviderPayload(profile, body); }
+        catch (error) {
+          if (schemaMode !== 'normalized' || !isToolGrammarCompilationError(error)) throw error;
+          schemaMode = 'json_envelope';
+          definitions = mcpFunctionDefinitions(selectedTools, profile.apiType, { schemaMode });
+          toolsByWireName = new Map(definitions.map((definition) => [definition.wireName, definition]));
+          modelTools = definitions.map((definition) => definition.modelTool);
+          const fallbackBody = profile.apiType === 'responses'
+            ? buildResponsesBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined })
+            : buildChatCompletionsBody(profile, conversation, context, { stream: false, tools: modelTools, toolChoice: requireToolCall ? 'required' : undefined });
+          payload = await requestProviderPayload(profile, fallbackBody);
+        }
+        requireToolCall = false;
+        if (stoppedOperationId === operationId) throw new Error('Request stopped.');
+        if (profile.apiType === 'responses') {
+          const calls = responseToolCallsFromPayload(payload);
+          if (!calls.length) {
+            const candidate = extractBufferedText(profile, JSON.stringify(payload));
+            if (appearsToStopBeforeToolCall(candidate) && stalledToolContinuations < MAX_STALLED_TOOL_CONTINUATIONS) {
+              stalledToolContinuations += 1;
+              for (const item of payload.output || []) conversation.push(item);
+              conversation.push({ role: 'user', content: continuationInstruction(candidate) });
+              requireToolCall = true;
+              continue;
+            }
+            finalText = candidate; break;
+          }
+          stalledToolContinuations = 0;
+          for (const item of payload.output || []) conversation.push(item);
+          for (const call of calls) {
+            const definition = toolsByWireName.get(call.name);
+            if (!definition) throw new Error(`The model requested an unknown tool: ${call.name}`);
+            const argumentsObject = argumentsForMcpTool(definition, call.arguments);
+            const approved = await requestMcpToolApproval(definition.mcpName, argumentsObject);
+            if (stoppedOperationId === operationId) throw new Error('Request stopped.');
+            let output;
+            if (approved) output = mcpResultForModel(await callMcpTool(session, definition.mcpName, argumentsObject));
+            else output = JSON.stringify({ isError: true, error: 'The user denied this Notion tool call.' });
+            conversation.push({ type: 'function_call_output', call_id: call.call_id, output });
+          }
+        } else {
+          const calls = chatToolCallsFromPayload(payload);
+          const message = payload?.choices?.[0]?.message;
+          if (!calls.length) {
+            const candidate = extractBufferedText(profile, JSON.stringify(payload));
+            if (appearsToStopBeforeToolCall(candidate) && stalledToolContinuations < MAX_STALLED_TOOL_CONTINUATIONS) {
+              stalledToolContinuations += 1;
+              conversation.push({ role: 'assistant', content: candidate });
+              conversation.push({ role: 'user', content: continuationInstruction(candidate) });
+              requireToolCall = true;
+              continue;
+            }
+            finalText = candidate; break;
+          }
+          stalledToolContinuations = 0;
+          conversation.push({ role: 'assistant', content: message?.content || '', tool_calls: calls });
+          for (const call of calls) {
+            const definition = toolsByWireName.get(call.function?.name);
+            if (!definition) throw new Error(`The model requested an unknown tool: ${call.function?.name}`);
+            const argumentsObject = argumentsForMcpTool(definition, call.function?.arguments);
+            const approved = await requestMcpToolApproval(definition.mcpName, argumentsObject);
+            if (stoppedOperationId === operationId) throw new Error('Request stopped.');
+            let output;
+            if (approved) output = mcpResultForModel(await callMcpTool(session, definition.mcpName, argumentsObject));
+            else output = JSON.stringify({ isError: true, error: 'The user denied this Notion tool call.' });
+            conversation.push({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: output });
+          }
+        }
+      }
+      if (!finalText) throw new Error(`The model did not produce a final answer after ${MAX_MCP_TOOL_ROUNDS} Notion tool rounds.`);
+      assistant.content = finalText;
+      assistant.pending = false;
+      chat.updatedAt = nowIso();
+      await persist();
+      render();
+    } catch (error) {
+      if (error.message === 'Request stopped.') {
+        assistant.pending = false;
+        assistant.error = '';
+        assistant.content = assistant.content && !/^(Connecting|Thinking|Working)/.test(assistant.content) ? assistant.content : '[Stopped]';
+        await persist(); render();
+      } else finishWithError(assistant, error);
+    } finally {
+      mcpOperationActive = false;
+      render();
+    }
+  }
+
+  function requestMcpToolApproval(toolName, argumentsObject) {
+    return new Promise((resolve) => {
+      const modal = document.createElement('div');
+      modal.className = 'modal-backdrop';
+      modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="approval-title"><h2 id="approval-title">Approve Notion tool call?</h2><p><strong>Notion · ${escapeHtml(toolName || 'unknown tool')}</strong></p><pre>${escapeHtml(JSON.stringify(argumentsObject || {}, null, 2))}</pre><p class="notice">BYON will send this call directly to your connected Notion workspace.</p><div class="row end"><button data-decision="deny">Deny</button><button class="primary" data-decision="approve">Approve once</button></div></div>`;
+      shadow.appendChild(modal);
+      modal.querySelector('[data-decision="approve"]').focus();
+      modal.onclick = (event) => {
+        const decision = event.target.closest('[data-decision]')?.dataset.decision;
+        if (!decision) return;
+        modal.remove();
+        resolve(decision === 'approve');
+      };
+    });
   }
 
   let renderTimer = null;
@@ -965,34 +1876,13 @@
   function finishWithError(assistant, error) {
     currentRequest = null;
     assistant.pending = false;
-    assistant.error = redactSecret(error.message || error, secretsForProfile(activeProfile()));
+    assistant.error = redactSecret(error.message || error, secretsForProfile(activeProfile(), state.notionMcp));
     persist(); render();
   }
 
   function stopRequest() {
+    stoppedOperationId = currentOperationId;
     if (currentRequest && typeof currentRequest.abort === 'function') currentRequest.abort();
-  }
-
-  function requestApproval(chat, assistant, context, responseId, approval) {
-    if (!responseId) { finishWithError(assistant, new Error('The endpoint requested MCP approval without returning a response ID.')); return; }
-    const argumentsText = (() => { try { return JSON.stringify(JSON.parse(approval.arguments || '{}'), null, 2); } catch (_) { return approval.arguments || '{}'; } })();
-    const modal = document.createElement('div');
-    modal.className = 'modal-backdrop';
-    modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="approval-title"><h2 id="approval-title">Approve Notion tool call?</h2><p><strong>${escapeHtml(approval.server_label || 'notion')} · ${escapeHtml(approval.name || 'unknown tool')}</strong></p><pre>${escapeHtml(argumentsText)}</pre><p class="notice">BYON requires approval for every remote MCP call.</p><div class="row end"><button data-decision="deny">Deny</button><button class="primary" data-decision="approve">Approve once</button></div></div>`;
-    shadow.appendChild(modal);
-    modal.querySelector('[data-decision="approve"]').focus();
-    modal.onclick = (event) => {
-      const decision = event.target.closest('[data-decision]')?.dataset.decision;
-      if (!decision) return;
-      modal.remove();
-      assistant.pending = true;
-      performCompletion(chat, assistant, context, {
-        responseId,
-        approvalRequestId: approval.id || approval.approval_request_id,
-        approve: decision === 'approve',
-        reason: decision === 'approve' ? 'Approved once by the user in BYON.' : 'Denied by the user in BYON.'
-      });
-    };
   }
 
   function copyMessage(index) {
@@ -1002,7 +1892,7 @@
 
   function retryMessage(index) {
     const chat = activeChat();
-    if (!chat || currentRequest) return;
+    if (!chat || currentRequest || mcpOperationActive) return;
     let userIndex = index - 1;
     while (userIndex >= 0 && chat.messages[userIndex].role !== 'user') userIndex -= 1;
     if (userIndex < 0) return;
@@ -1015,7 +1905,7 @@
   function editMessage(index) {
     const chat = activeChat();
     const message = chat?.messages[index];
-    if (!message || message.role !== 'user' || currentRequest) return;
+    if (!message || message.role !== 'user' || currentRequest || mcpOperationActive) return;
     const composer = shadow.getElementById('byon-composer');
     composer.value = message.content;
     draftAttachments = (message.attachments || []).map((attachment) => ({ ...attachment }));
@@ -1073,13 +1963,23 @@
       status.textContent = 'Discovering models…';
       const response = await connectionRequest(activeProfile(), 'models');
       const payload = JSON.parse(response.responseText);
-      const models = Array.isArray(payload.data) ? payload.data.map((model) => model.id).filter(Boolean).sort() : [];
+      const records = Array.isArray(payload.data) ? payload.data : Array.isArray(payload.models) ? payload.models : [];
+      const models = records.map((model) => typeof model === 'string' ? model : model.id || model.name).filter(Boolean).sort();
       if (!models.length) throw new Error('The endpoint returned no model IDs. You can still enter one manually.');
-      activeProfile().discoveredModels = models;
+      const profile = activeProfile();
+      profile.discoveredModels = models;
+      profile.modelMetadata = {};
+      for (const record of records) {
+        if (!record || typeof record === 'string') continue;
+        const id = record.id || record.name;
+        const contextTokens = contextLimitFromModelRecord(record);
+        if (id && contextTokens) profile.modelMetadata[id] = { contextTokens };
+      }
       await persist();
       const datalist = panel.querySelector('#byon-models');
       datalist.innerHTML = models.map((model) => `<option value="${escapeHtml(model)}"></option>`).join('');
-      status.textContent = `Found ${models.length} models. Choose one from the Model field.`;
+      const contexts = Object.keys(profile.modelMetadata).length;
+      status.textContent = `Found ${models.length} models${contexts ? ` and context limits for ${contexts}` : ''}. Choose one from the Model field.`;
     } catch (error) { status.textContent = redactSecret(error.message, secretsForProfile(activeProfile())); }
   }
 
@@ -1151,7 +2051,7 @@
   function hijackClick(event) {
     event.preventDefault();
     event.stopImmediatePropagation();
-    openPanel(false);
+    openPanel(false, 'side');
   }
 
   function replaceTrigger(element) {
@@ -1181,13 +2081,56 @@
     notionAiCandidates().forEach(replaceTrigger);
   }
 
+  function notionFullPageAiSurface() {
+    if (!isNotionAiPath()) return null;
+    const composers = document.querySelectorAll('[data-testid="unified-chat-model-button"]');
+    for (const modelButton of composers) {
+      if (modelButton.closest('#byon-root')) continue;
+      let container = modelButton.parentElement;
+      while (container && container !== document.body) {
+        const prompt = container.querySelector('[placeholder="Do anything with AI…"]');
+        if (prompt) {
+          const width = Math.max(prompt.getBoundingClientRect().width, container.getBoundingClientRect().width);
+          if (width >= 600) return container;
+        }
+        container = container.parentElement;
+      }
+    }
+    return null;
+  }
+
+  function syncFullPageIntegration() {
+    if (observedLocationUrl !== global.location.href) {
+      observedLocationUrl = global.location.href;
+      suppressedFullPageUrl = '';
+    }
+    if (!isNotionAiPath()) {
+      if (viewMode === 'full') {
+        if (panel) panel.hidden = true;
+        viewMode = 'side';
+        ensureHost();
+      }
+      return;
+    }
+    updateFullPageBounds();
+    if (!notionFullPageAiSurface()) return;
+    if (pendingFullPageOpen) {
+      pendingFullPageOpen = false;
+      openPanel(false, 'full');
+      return;
+    }
+    if (!state.settings.replacementEnabled) return;
+    if (panel?.hidden && suppressedFullPageUrl !== global.location.href) openPanel(false, 'full');
+  }
+
   function observeTriggers() {
     replacementObserver = new MutationObserver(() => {
       clearTimeout(observeTriggers.timer);
-      observeTriggers.timer = setTimeout(applyTriggerReplacement, 80);
+      observeTriggers.timer = setTimeout(() => { applyTriggerReplacement(); syncFullPageIntegration(); }, 80);
     });
     replacementObserver.observe(document.documentElement, { childList: true, subtree: true });
     applyTriggerReplacement();
+    syncFullPageIntegration();
   }
 
   function recordSelection() {
@@ -1200,18 +2143,28 @@
 
   function handleShortcut(event) {
     if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'j') {
-      event.preventDefault(); event.stopImmediatePropagation(); openPanel(false);
+      event.preventDefault(); event.stopImmediatePropagation(); openPanel(false, 'side');
     }
   }
 
   async function initialize() {
     state = migrateState(await gm.getValue(STORAGE_KEY, null));
+    try { await handleMcpOAuthCallback(); }
+    catch (error) {
+      state.notionMcp.pendingOAuth = null;
+      await persist();
+      global.alert(`BYON could not connect Notion: ${redactSecret(error.message, secretsForProfile(activeProfile(), state.notionMcp))}`);
+    }
+    pendingFullPageOpen = isNotionAiPath() && consumeFullPageRouteIntent();
     ensureHost();
     observeTriggers();
     document.addEventListener('selectionchange', recordSelection);
     global.addEventListener('keydown', handleShortcut, true);
-    gm.menu('Open BYON', () => openPanel(false));
-    gm.menu('BYON Settings', () => openPanel(true));
+    global.addEventListener('resize', updateFullPageBounds);
+    global.addEventListener('popstate', syncFullPageIntegration);
+    gm.menu('Open BYON', () => openPanel(false, 'side'));
+    gm.menu('Open BYON Full Page', () => openPanel(false, 'full'));
+    gm.menu('BYON Settings', () => openPanel(true, 'side'));
   }
 
   const STYLES = `
@@ -1232,9 +2185,15 @@
     .messages{padding:16px 20px 8px}.landing{min-height:66%}.landing h1{font-size:17px;line-height:22px;font-weight:600;margin:12px 0 3px}.landing p{font-size:12px;line-height:16px}.message{margin-bottom:20px}.message.user{border-radius:12px;padding:10px 12px;background:var(--c-bacSec,var(--faint))}.message-content{line-height:1.5}
     .composer-area{padding:8px 16px 12px}.composer-wrap{border:0;border-radius:16px;padding:0;background:var(--c-bacPri,var(--panel));box-shadow:var(--c-shaOutSm,0 1px 3px rgba(0,0,0,.08))}.composer-wrap:focus-within{border:0;box-shadow:var(--c-shaOutSm,0 1px 3px rgba(0,0,0,.08)),0 0 0 1px var(--c-borPri,var(--border))}.composer-wrap textarea{min-height:60px;padding:12px 12px 0 14px;font-size:14px;line-height:20px}.attachment-row{padding:8px 10px 0}.composer-toolbar{min-height:36px;height:36px;margin:0;padding:4px 8px}.round-tool,.send{width:28px;height:28px}.round-tool .ui-icon{width:20px;height:20px}.model-button{height:28px;max-width:200px;padding:4px 10px;gap:5px;border-radius:999px;font-weight:500}.model-name{font-size:14px;line-height:20px}.send .ui-icon{width:16px;height:16px}.disclaimer{margin-top:4px}
     .notion-popover{border:0;border-radius:10px;box-shadow:var(--c-shaOutLg,0 8px 24px rgba(0,0,0,.14));padding:4px}.chat-popover{top:40px;inset-inline-start:12px;width:min(320px,calc(100% - 24px))}.plus-popover{bottom:64px;inset-inline-start:16px;width:280px}.model-popover{bottom:64px;inset-inline-end:16px;width:min(320px,calc(100% - 32px));padding:4px 0}.mode-popover{bottom:64px;inset-inline-start:48px;width:min(280px,calc(100% - 64px))}.popover-search{height:36px;margin:2px 6px 5px;padding:0 9px}.popover-search input{font-size:14px}.menu-section-label{padding:7px 10px 4px;font-weight:400}.menu-row,.menu-row-button,.mode-row{min-height:36px;padding:6px 8px;gap:8px}.model-row{min-height:44px;padding:5px 10px}.model-logo{width:18px;height:18px;font-size:10px;font-weight:500}.model-copy{gap:0}.model-copy strong{font-size:14px;line-height:20px;font-weight:500}.model-copy small,.menu-row-button small,.mode-row small{font-size:12px;line-height:16px}.model-group+.model-group{margin-top:3px;padding-top:3px}.popover-footer{margin-top:4px;padding:4px 5px 0}.popover-footer button{min-height:28px}.row-action{width:28px;height:28px}
-    .settings-view{padding:12px 16px 20px}.settings-title{height:32px;gap:6px}.settings-title h2{font-size:16px;line-height:22px;font-weight:600;margin:0}.settings-view label{gap:4px;margin:9px 0;font-size:12px;line-height:16px;font-weight:400}.settings-view input,.settings-view select,.settings-view textarea{min-height:32px;border:0;border-radius:8px;padding:6px 8px;background:var(--c-bacPri,var(--panel));box-shadow:inset 0 0 0 1px var(--c-borPri,var(--border));font-size:14px;line-height:20px}.settings-view input:focus,.settings-view select:focus,.settings-view textarea:focus{box-shadow:inset 0 0 0 1px var(--c-bluBorAccPri,#2383e2),0 0 0 1px var(--c-bluBorAccPri,#2383e2)}.settings-view fieldset{margin:12px 0;padding:0 10px 8px;border:0;border-radius:10px;background:var(--ca-bacSecTra,var(--faint))}.settings-view legend{padding:7px 2px 0;font-weight:500}.grid-two{gap:8px}.row{gap:6px}.notice{padding:7px 9px;border-radius:8px;font-size:12px;line-height:16px}.status{margin-top:8px}.modal{border:0;border-radius:12px;box-shadow:var(--c-shaOutLg,0 12px 40px rgba(0,0,0,.2))}
+    .settings-view{padding:12px 16px 20px}.settings-title{height:32px;gap:6px}.settings-title h2{font-size:16px;line-height:22px;font-weight:600;margin:0}.settings-view label{gap:4px;margin:9px 0;font-size:12px;line-height:16px;font-weight:400}.settings-view input,.settings-view select,.settings-view textarea{min-height:32px;border:0;border-radius:8px;padding:6px 8px;background:var(--c-bacPri,var(--panel));box-shadow:inset 0 0 0 1px var(--c-borPri,var(--border));font-size:14px;line-height:20px}.settings-view input:focus,.settings-view select:focus,.settings-view textarea:focus{box-shadow:inset 0 0 0 1px var(--c-bluBorAccPri,#2383e2),0 0 0 1px var(--c-bluBorAccPri,#2383e2)}.settings-view fieldset{margin:12px 0;padding:0 10px 8px;border:0;border-radius:10px;background:var(--ca-bacSecTra,var(--faint))}.settings-view legend{padding:7px 2px 0;font-weight:500}.grid-two{gap:8px}.row{gap:6px}.notice{padding:7px 9px;border-radius:8px;font-size:12px;line-height:16px}.status{margin-top:8px}.connection-status{display:flex;align-items:center;gap:7px;margin:7px 0;color:var(--muted);font-size:12px}.status-dot{width:7px;height:7px;border-radius:50%;background:var(--c-redBacAccPri,#e03e3e)}.connection-status.connected .status-dot{background:var(--c-greBacAccPri,#0f9d58)}.settings-view details{margin-top:8px}.settings-view summary{cursor:pointer;color:var(--muted);font-size:12px;user-select:none}.modal{border:0;border-radius:12px;box-shadow:var(--c-shaOutLg,0 12px 40px rgba(0,0,0,.2))}
+    :host{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI Variable Display","Segoe UI Variable","Segoe UI",Helvetica,"Apple Color Emoji","Noto Sans Arabic","Noto Sans Hebrew",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";-webkit-font-smoothing:auto}
+    .composer-wrap{border:0;box-shadow:var(--c-shaOutSm,0 1px 3px rgba(0,0,0,.08)),0 0 0 1px var(--ca-borPriTra,var(--border))}.composer-wrap:focus-within{border:0;box-shadow:var(--c-shaOutSm,0 1px 3px rgba(0,0,0,.08)),0 0 0 2px var(--c-bluBorAccPri,#2383e2)}.send,.send.stop{background:var(--c-bluBacAccPri,#2383e2);color:var(--c-texInvPri,#fff)}
+    .popover-search{height:34px;margin:3px 6px 5px;padding:0 8px;border-radius:8px;background:var(--ca-bacTerTra,var(--faint));box-shadow:none}.popover-search:focus-within{box-shadow:inset 0 0 0 1.5px var(--c-bluBorAccPri,#2383e2)}
+    .model-popover{padding:4px}.model-chip-list{display:flex;flex-direction:column;gap:2px;padding:0 2px}.model-row{min-height:42px;padding:4px 7px;border-radius:7px}.model-row.selected{background:var(--ca-bacIntTra,var(--faint))}.model-group+.model-group{border-top:0;margin-top:2px;padding-top:2px}.model-copy small{color:var(--c-texSec,var(--muted))}
+    .context-meter{display:block;position:relative;width:34px;height:5px;overflow:hidden;border-radius:999px;background:var(--ca-bacTerTra,var(--faint));flex:0 0 auto}.context-meter-fill{display:block;height:100%;border-radius:inherit;background:var(--c-greBacAccPri,#46a171);transition:width 160ms ease,background 160ms ease}.context-meter.warning .context-meter-fill{background:var(--c-yelBacAccPri,#d8a32f)}.context-meter.danger .context-meter-fill{background:var(--c-redBacAccPri,#e03e3e)}
     .settings-view .checkbox input{width:14px;height:14px;min-height:0;padding:0;box-shadow:none;accent-color:var(--c-bluBacAccPri,#2383e2)}
-    @media(max-width:600px){.panel{width:100%!important}.resize-handle{display:none}.messages{padding-inline:14px}.grid-two{grid-template-columns:1fr}}
+    .chat-shell{position:relative;display:flex;flex:1 1 auto;min-width:0;height:100%;flex-direction:column;overflow:hidden}.full-page{position:absolute;inset:0;width:auto;max-width:none;border:0;box-shadow:none;animation:byon-panel-in 180ms cubic-bezier(.2,.8,.2,1);flex-direction:row}.full-page .resize-handle{display:none}.full-page .panel-header{padding-inline:12px 16px}.full-page .chat-title-button{max-width:min(50%,420px)}.full-page .messages{width:100%;padding:16px 48px 132px;scrollbar-gutter:stable}.full-page .message-column{width:100%;max-width:798px;margin:0 auto}.full-page.has-chat .composer-area{position:absolute;inset-inline:0;bottom:0;width:min(710px,calc(100% - 64px));margin:0 auto;padding:8px 0 16px;background:linear-gradient(transparent 0,var(--c-bacPri,var(--panel)) 20%)}.full-page.start-chat .messages{overflow:hidden;padding:0 48px;display:flex;align-items:stretch}.full-page.start-chat .message-column{max-width:710px;display:flex;flex:1}.full-page.start-chat .landing{width:100%;min-height:0;justify-content:flex-end;padding-bottom:24px}.full-page.start-chat .landing-icon{width:64px;height:64px}.full-page.start-chat .landing h1{font-size:20px;line-height:26px;margin-top:16px}.full-page.start-chat .composer-area{width:min(710px,calc(100% - 96px));margin:0 auto;padding:0 0 15vh;background:var(--c-bacPri,var(--panel))}.full-page .composer-wrap textarea{min-height:68px;padding:16px 16px 2px 18px}.full-page .composer-toolbar{height:40px;padding:6px 10px}.full-page .attachment-row{padding:10px 12px 0}.full-page .plus-popover,.full-page .model-popover,.full-page .mode-popover{bottom:calc(15vh + 62px)}.full-page.has-chat .plus-popover,.full-page.has-chat .model-popover,.full-page.has-chat .mode-popover{bottom:78px}.full-settings-sidebar{position:relative;z-index:6;flex:0 0 min(390px,38vw);width:min(390px,38vw);height:100%;overflow:hidden;background:var(--c-bacPri,var(--panel));border-inline-start:1px solid var(--c-borSec,var(--border));box-shadow:var(--c-shaOutSm,-1px 0 3px rgba(0,0,0,.05));animation:byon-panel-in 180ms cubic-bezier(.2,.8,.2,1)}.full-settings-sidebar .settings-view{padding:12px 18px 24px}.full-page.showing-settings{overflow:hidden}
+    @media(max-width:760px){.panel{width:100%!important}.resize-handle{display:none}.messages{padding-inline:14px}.grid-two{grid-template-columns:1fr}.full-page.showing-settings .chat-shell{display:none}.full-settings-sidebar{flex-basis:100%;width:100%;border-inline-start:0}}
   `;
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, { once: true });
