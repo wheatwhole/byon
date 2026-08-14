@@ -3,9 +3,10 @@ references/raw/
 references/screenshots/
 references/side-panel/
 references/styles/
+references/full-page/saved-pages/
 
 # Focused excerpts are kept local except for the small hover-card fixture.
-references/components/api-mode-selector.html
-references/components/chat-panel.html
-references/components/model-selector.html
+references/components/notion-chat-mode-selector.html
+references/components/notion-ai-side-panel-start-screen.html
+references/components/notion-model-selector.html
 test/browser-smoke.cjs

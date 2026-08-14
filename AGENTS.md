@@ -12,8 +12,8 @@ The distributable is `byon.user.js`. Keep it dependency-free, with no remote exe
 - `test/byon.test.js`: Node unit and source-contract tests.
 - `test/browser-smoke.cjs`: Chrome DevTools browser smoke test and screenshot capture.
 - `references/README.md`: catalog of all saved Notion visual and DOM references.
-- `references/side-panel/`: side-panel chat and popover captures with their downloaded assets.
-- `references/full-page/`: fullscreen states plus sidebar and toolbar regression captures.
+- `references/side-panel/saved-pages/`: complete side-panel browser saves with their downloaded assets.
+- `references/full-page/saved-pages/`: complete `/ai` browser saves; `fragments/` contains DOM excerpts and `regressions/` contains BYON bug captures.
 - `references/components/`: focused component excerpts.
 - `references/screenshots/`, `references/styles/`, `references/raw/`: visual aids, extracted CSS, and the original browser archive.
 - `README.md`: behavior, setup, privacy, and MCP documentation.
@@ -107,4 +107,4 @@ Inspect browser screenshots whenever layout or styling changes. A passing geomet
 
 ## Current release state
 
-At the time this handoff was written, BYON is version 0.5.5. The unit suite has 36 tests, and the browser smoke test passes with the native fullscreen toolbar visible, the hamburger clickable, and chat selection working.
+At the time this handoff was updated, BYON is version 0.5.7. The unit suite has 37 tests, and the browser smoke test passes with the native fullscreen toolbar visible, the hamburger clickable, and chat selection working.

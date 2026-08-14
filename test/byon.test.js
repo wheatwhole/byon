@@ -31,13 +31,135 @@ test('UI inherits Notion theme tokens instead of the operating-system theme', ()
   assert.match(source, /\.notion-app-inner\.notion-dark-theme/);
   assert.doesNotMatch(source, /prefers-color-scheme/);
   assert.equal(Core.defaultState().settings.panelWidth, 464);
+  assert.equal(Core.migrateState({ settings: { panelWidth: 320 }, profiles: [profile()], chats: [] }).settings.panelWidth, 360);
   assert.match(source, /function installInputIsolation/);
   assert.match(source, /event\.stopPropagation\(\)/);
 });
 
+test('native Space-to-edit writer is borrowed only after guarded submission', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
+  assert.match(source, /\.notion-agent-writer-ui/);
+  assert.match(source, /placeholder="Edit with AI"/);
+  assert.match(source, /aria-label="Submit query"/);
+  assert.match(source, /global\.addEventListener\('keydown', handleInlineWriterKeydown, true\)/);
+  assert.match(source, /global\.addEventListener\('pointerdown', handleInlineWriterClick, true\)/);
+  assert.match(source, /global\.addEventListener\('click', handleInlineWriterClick, true\)/);
+  assert.match(source, /global\.addEventListener\('beforeinput', handleInlineWriterBeforeInput, true\)/);
+  assert.match(source, /Register before Notion initializes/);
+  assert.match(source, /stopImmediatePropagation\(\)/);
+  assert.match(source, /data-byon-inline-host/);
+  assert.match(source, /data-byon-inline-owned/);
+  assert.match(source, /findInlineWriterAnchor/);
+  assert.match(source, /lastInlineTriggerBlock/);
+  assert.match(source, /boundInlineWriters/);
+  assert.match(source, /writer\.addEventListener\(type, handleInlineWriterKeydown, true\)/);
+  assert.match(source, /dataset\.byonInlineStatus/);
+  assert.doesNotMatch(source, /function handleInlineWriterSpace/);
+});
+
+test('inline page-edit proposals use strict targeted block patches without MCP or chat history', () => {
+  const chatTool = Core.inlineEditToolDefinition('chat_completions');
+  assert.equal(chatTool.function.name, 'byon_edit_page');
+  assert.deepEqual(chatTool.function.parameters.properties.changes.items.properties.operation.enum, ['replace', 'insert_before', 'insert_after']);
+  const responsesTool = Core.inlineEditToolDefinition('responses');
+  assert.equal(responsesTool.name, 'byon_edit_page');
+
+  const blocks = [
+    { id: 'paragraph-a', supported: true },
+    { id: 'database-b', supported: false }
+  ];
+  assert.deepEqual(Core.validateInlineEditPatches({ summary: 'Updated intro', changes: [
+    { operation: 'replace', target_block_id: 'paragraph-a', markdown: '# Better intro' }
+  ] }, blocks), {
+    mode: 'patch',
+    draftMarkdown: '',
+    summary: 'Updated intro',
+    changes: [{ operation: 'replace', targetBlockId: 'paragraph-a', markdown: '# Better intro' }]
+  });
+  assert.deepEqual(Core.validateInlineEditPatches({
+    mode: 'draft', draft_markdown: 'Three complete paragraphs.', summary: 'Drafted a response', changes: []
+  }, blocks), {
+    mode: 'draft', draftMarkdown: 'Three complete paragraphs.', summary: 'Drafted a response', changes: []
+  });
+  assert.throws(() => Core.validateInlineEditPatches({
+    mode: 'draft', draft_markdown: 'Draft', summary: 'Invalid mixed result', changes: [
+      { operation: 'replace', target_block_id: 'paragraph-a', markdown: 'Patch' }
+    ]
+  }, blocks), /cannot also contain page patches/);
+  assert.throws(() => Core.validateInlineEditPatches({
+    mode: 'patch', draft_markdown: '', summary: 'Missing patch', changes: []
+  }, blocks), /between 1 and 50 changes/);
+  assert.throws(() => Core.validateInlineEditPatches({ summary: 'Bad', changes: [
+    { operation: 'replace', target_block_id: 'database-b', markdown: 'No' }
+  ] }, blocks), /unavailable block ID/);
+  assert.throws(() => Core.validateInlineEditPatches({ summary: 'Duplicate', changes: [
+    { operation: 'replace', target_block_id: 'paragraph-a', markdown: 'One' },
+    { operation: 'replace', target_block_id: 'paragraph-a', markdown: 'Two' }
+  ] }, blocks), /duplicates another operation/);
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
+  assert.match(source, /profileSystemPrompt\(profile, false\)/);
+  assert.match(source, /is_cursor: block\.id === cursorBlockId/);
+  assert.match(source, /Never default to the first or top block/);
+  assert.match(source, /Choose mode=draft/);
+  assert.match(source, /commitInlineDraftBelow/);
+  assert.match(source, /proposal\.mode === 'draft'/);
+  assert.doesNotMatch(source, /text\.slice\(index, index \+ 64\)/);
+  assert.match(source, /target\.cloneNode\(true\)/);
+  assert.match(source, /target\.parentNode\.insertBefore\(preview/);
+  assert.match(source, /dataset\.byonInlinePreview/);
+  assert.match(source, /leaf\.innerHTML = inlinePreviewDiffHtml/);
+  assert.match(source, /class=\"notion-enable-hover\"/);
+  assert.match(source, /data-token-index/);
+  assert.match(source, /inlinePreviewDecorations/);
+  assert.match(source, /monitorInlinePreviewIntegrity/);
+  assert.match(source, /requestAnimationFrame\(check\)/);
+  assert.match(source, /inlinePreviewNodes\.length \+ inlinePreviewDecorations\.length !== session\.proposal\.changes\.length/);
+  assert.doesNotMatch(source, /byon-inline-preview-root/);
+  assert.match(source, /steps\.every\(\(step\) => step\.kind === 'paragraph'\)/);
+  assert.match(source, /continueInNewNotionParagraph/);
+  assert.match(source, /settleNotionSelection/);
+  assert.match(source, /pasteMarkdownIntoNotion/);
+  assert.match(source, /new ClipboardEvent\('paste'/);
+  assert.match(source, /waitForInlineEditPersistence/);
+  assert.match(source, /consecutiveMatches >= 2/);
+  assert.match(source, /leaf\?\.innerText \|\| leaf\?\.textContent/);
+  assert.doesNotMatch(source, /style\.setProperty\('translate'/);
+  assert.match(source, /data-content-editable-root="true"/);
+  assert.match(source, /Inline requests are ephemeral|inline sessions remain ephemeral|generateInlineEditProposal/);
+  assert.doesNotMatch(source, /performMcpCompletion\([^)]*inline/i);
+});
+
+test('inline block serialization and Markdown commit planning cover supported Notion blocks', () => {
+  assert.equal(Core.notionBlockTypeFromClassName('notion-selectable notion-header-block'), 'heading_1');
+  assert.equal(Core.notionBlockTypeFromClassName('notion-selectable notion-numbered_list-block'), 'numbered_list');
+  assert.equal(Core.notionBlockTypeFromClassName('notion-selectable notion-collection_view-block'), '');
+  assert.equal(Core.markdownForNotionBlock('heading_2', 'Plan'), '## Plan');
+  assert.equal(Core.markdownForNotionBlock('to_do', 'Ship it', { checked: false }), '- [ ] Ship it');
+  assert.equal(Core.markdownForNotionBlock('code', 'const x = 1;', { language: 'js' }), '```js\nconst x = 1;\n```');
+  assert.deepEqual(Core.markdownCommitSteps('# Heading\n- item\nParagraph'), [
+    { prefix: '#', text: 'Heading', kind: 'markdown' },
+    { prefix: '-', text: 'item', kind: 'markdown' },
+    { prefix: '', text: 'Paragraph', kind: 'paragraph' }
+  ]);
+  assert.equal(Core.plainTextFromMarkdown('## Heading\n- [ ] **Task**\n[Page](https://example.test)'), 'Heading\nTask\nPage');
+});
+
+test('chat messages and composer follow saved Notion component styling', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
+  assert.match(source, /class="message-surface"/);
+  assert.match(source, /aria-label="Edit message"/);
+  assert.match(source, /aria-label="Copy \$\{message\.role === 'assistant' \? 'response' : 'text'\}"/);
+  assert.match(source, /iconSvg\('copy'\)/);
+  assert.match(source, /\.message\.user \.message-surface\{max-width:calc\(95% - 40px\);margin-inline-start:70px;padding:6px 14px;border-radius:16px/);
+  assert.match(source, /\.message\.assistant \.message-surface\{width:100%;padding-inline:4px\}/);
+  assert.match(source, /\.message:hover>\.message-actions.*opacity:1/);
+  assert.match(source, /\.composer-wrap\{border:0;border-radius:16px.*var\(--c-shaOutSm/);
+});
+
 test('tool approvals use inline Notion-style controls and expose three composer modes', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
-  assert.match(source, /Using tool:/);
+  assert.match(source, /'Using tool'/);
   assert.match(source, />Allow<\/button>/);
   assert.match(source, />Always allow<\/button>/);
   assert.match(source, />Deny<\/button>/);
@@ -45,6 +167,57 @@ test('tool approvals use inline Notion-style controls and expose three composer 
   assert.match(source, /Approve for me/);
   assert.match(source, /Run automatically/);
   assert.doesNotMatch(source, /Approve Notion tool call\?/);
+});
+
+test('thinking and MCP calls use expandable Notion-style activity chips', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
+  assert.match(source, /class="thinking-chip activity-chip active"/);
+  assert.match(source, /details class="tool-activity" data-tool-activity-id/);
+  assert.match(source, /<strong>Input<\/strong><pre><code>/);
+  assert.match(source, /<strong>Result<\/strong><pre><code>/);
+  assert.match(source, /rememberOpenToolActivities\(list\)/);
+  assert.match(source, /\.activity-chip\.active \.activity-label.*linear-gradient.*animation:byon-activity-shimmer/);
+  assert.match(source, /\.tool-activity\[open\] \.activity-chevron\{transform:rotate\(90deg\)\}/);
+  assert.doesNotMatch(source, /tool-status-dot/);
+  assert.match(source, /class="mcp-steps" data-tool-activity-id/);
+  assert.match(source, /<span>\(\$\{activities\.length\}\) steps<\/span>/);
+  assert.match(source, /activities\.every\(\(activity\) => !\['running', 'awaiting'\]\.includes\(activity\.status\)\)/);
+});
+
+test('Notion page links render as saved-reference page chips', () => {
+  const notionLink = Core.renderMarkdown('[View task details](https://app.notion.com/p/3bb4cb1c68818083a71aea7ec403dc22)');
+  assert.match(notionLink, /class="notion-page-chip"/);
+  assert.match(notionLink, /class="notion-page-chip-icon"/);
+  assert.match(notionLink, /class="notion-page-chip-arrow"/);
+  const externalLink = Core.renderMarkdown('[Example](https://example.com/page)');
+  assert.doesNotMatch(externalLink, /notion-page-chip/);
+  assert.doesNotMatch(Core.renderMarkdown('[Notion docs](https://developers.notion.com/reference/intro)'), /notion-page-chip/);
+});
+
+test('current-page links always use the exact page title and become clickable', () => {
+  const context = { title: 'sunny', url: 'https://app.notion.com/p/wheatwhole/sunny-2d5204bc78564a509272b1cb6bb352df' };
+  assert.equal(
+    Core.normalizeCurrentPageLinkMarkdown('**https://app.notion.com/p/wheatwhole/sunny-2d5204bc78564a509272b1cb6bb352df**', context),
+    '**[sunny](https://app.notion.com/p/wheatwhole/sunny-2d5204bc78564a509272b1cb6bb352df)**'
+  );
+  assert.equal(
+    Core.normalizeCurrentPageLinkMarkdown('[Click here to go to the sunny workspace](https://app.notion.com/p/wheatwhole/sunny-2d5204bc78564a509272b1cb6bb352df)', context),
+    '[sunny](https://app.notion.com/p/wheatwhole/sunny-2d5204bc78564a509272b1cb6bb352df)'
+  );
+  assert.equal(
+    Core.normalizeCurrentPageLinkMarkdown('[sunny](https://app.notion.com/p/wheatwhole/sunny-2d5204bc78564a509272b1cb6bb352df?source=copy_link)', context),
+    '[sunny](https://app.notion.com/p/wheatwhole/sunny-2d5204bc78564a509272b1cb6bb352df)'
+  );
+  assert.match(Core.renderMarkdown(Core.normalizeCurrentPageLinkMarkdown(context.url, context)), /class="notion-page-chip"/);
+});
+
+test('Notion icons and compact chat selector rows use the polished variants', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
+  assert.match(source, /data-action="close-panel"[^\n]+iconSvg\('chevronRight'\)/);
+  assert.match(source, /chat-check[^\n]+iconSvg\('check'\)/);
+  assert.doesNotMatch(source, /✓/);
+  assert.match(source, /\.chat-popover \.chat-row\{width:calc\(100% - 8px\);min-height:30px;margin:2px 4px;padding:2px 6px/);
+  assert.equal((source.match(/\n\s+settings: '<path/g) || []).length, 1);
 });
 
 test('profile management is list-first and Notion MCP is global', () => {
@@ -62,6 +235,8 @@ test('profile management is list-first and Notion MCP is global', () => {
   assert.match(source, /syncSelectedModelsField\(profile\)/);
   assert.match(source, /\.profile-row\.active\{border-color:var\(--c-bluBorAccPri/);
   assert.match(source, /\.model-settings-search input:focus-visible\{outline:none!important/);
+  assert.match(source, /@container \(width <= 400px\)/);
+  assert.match(source, /\.model-compact-glyph/);
   assert.doesNotMatch(source, /Use connection/);
   assert.doesNotMatch(source, /Let this profile use Notion tools/);
 });
@@ -76,24 +251,36 @@ test('full-page mode is restricted to Notion /ai and navigates there when reques
 
 test('all saved references contain the AI chat surface and new visual references are present', () => {
   const references = path.join(__dirname, '..', 'references');
-  for (const name of ['notion-ai-chat-empty.html', 'notion-ai-chat-on-page.html']) {
-    const html = fs.readFileSync(path.join(references, 'side-panel', name), 'utf8');
+  const sidePanelSavedPages = path.join(references, 'side-panel', 'saved-pages');
+  const fullPageFragments = path.join(references, 'full-page', 'fragments');
+  for (const name of ['notion-ai-chat.html', 'notion-ai-attachment-menu.html']) {
+    const html = fs.readFileSync(path.join(sidePanelSavedPages, name), 'utf8');
     assert.match(html, /placeholder="Do anything with AI…"/);
     assert.match(html, /data-testid="unified-chat-model-button"/);
   }
+  const baseSidePanel = fs.readFileSync(path.join(sidePanelSavedPages, 'notion-ai-chat.html'), 'utf8');
+  assert.doesNotMatch(baseSidePanel, /Add images, PDFs, or CSVs/);
+  const attachmentMenu = fs.readFileSync(path.join(sidePanelSavedPages, 'notion-ai-attachment-menu.html'), 'utf8');
+  assert.match(attachmentMenu, /Add images, PDFs, or CSVs/);
+  assert.match(attachmentMenu, /Mention pages or people/);
+  const modelMenu = fs.readFileSync(path.join(sidePanelSavedPages, 'notion-ai-model-menu.html'), 'utf8');
+  assert.match(modelMenu, /Balances speed, effort, and cost\./);
+  const fullPage = fs.readFileSync(path.join(references, 'full-page', 'saved-pages', 'notion-ai-start-screen.html'), 'utf8');
+  assert.match(fullPage, /saved from url=\(0025\)https:\/\/app\.notion\.com\/ai/);
+  assert.match(fullPage, /placeholder="Do anything with AI…"/);
   assert.equal(Core.isNotionAiTriggerLabel('Ask AI', true), true);
   assert.equal(Core.isNotionAiTriggerLabel('AI Meeting Notes', true), false);
-  for (const name of ['chat-history-menu.html', 'model-menu.html', 'attachment-menu.html']) {
-    assert.equal(fs.existsSync(path.join(references, 'side-panel', name)), true);
+  for (const name of ['notion-ai-chat.html', 'notion-ai-model-menu.html', 'notion-ai-attachment-menu.html']) {
+    assert.equal(fs.existsSync(path.join(sidePanelSavedPages, name)), true);
   }
-  for (const name of ['chat-history-menu.jpg', 'attachment-menu.jpg', 'model-menu.jpg', 'api-mode-menu.jpg']) {
-    assert.equal(fs.existsSync(path.join(references, 'screenshots', name)), true);
+  for (const name of ['chat-selector-menu.jpg', 'attachment-menu.jpg', 'model-menu.jpg', 'chat-mode-menu.jpg']) {
+    assert.equal(fs.existsSync(path.join(references, 'screenshots', 'side-panel', name)), true);
   }
-  for (const name of ['chat-panel.html', 'model-selector.html', 'api-mode-selector.html']) {
+  for (const name of ['notion-ai-side-panel-start-screen.html', 'notion-model-selector.html', 'notion-chat-mode-selector.html', 'notion-connections-settings.html']) {
     assert.equal(fs.existsSync(path.join(references, 'components', name)), true);
   }
   for (const name of ['notion-ai-start-screen.html', 'notion-ai-active-chat.html']) {
-    const html = fs.readFileSync(path.join(references, 'full-page', name), 'utf8');
+    const html = fs.readFileSync(path.join(fullPageFragments, name), 'utf8');
     assert.match(html, /data-testid="unified-chat-model-button"/);
     assert.match(html, /Do anything with AI…/);
   }
@@ -181,6 +368,7 @@ test('Responses body uses translated function tools without provider-managed MCP
 test('MCP schemas are normalized to the conservative llama.cpp subset', () => {
   const source = {
     type: 'object',
+    additionalProperties: false,
     $defs: { target: { type: 'object', properties: { id: { type: ['string', 'null'], format: 'uuid' } }, required: ['id'] } },
     properties: {
       target: { $ref: '#/$defs/target' },
@@ -196,6 +384,7 @@ test('MCP schemas are normalized to the conservative llama.cpp subset', () => {
   });
   assert.deepEqual(normalized.properties.operation.enum, ['append', 'replace', 'delete']);
   assert.deepEqual(normalized.properties.amount, { type: 'number' });
+  assert.equal(normalized.additionalProperties, false);
   assert.equal(normalized.$defs, undefined);
   assert.equal(normalized.properties.forbidden.not, undefined);
 });
@@ -228,6 +417,47 @@ test('MCP tool grammar fallback uses a universal string envelope and unwraps it'
   assert.deepEqual(Core.argumentsForMcpTool(definition, JSON.stringify({ arguments_json: '{"page_id":"abc"}' })), { page_id: 'abc' });
   assert.equal(Core.isToolGrammarCompilationError(new Error("The model couldn't compile a tool-calling grammar for this request.")), true);
   assert.equal(Core.isToolGrammarCompilationError(new Error('HTTP 401: Unauthorized')), false);
+});
+
+test('MCP arguments are validated locally against the live schema before execution', () => {
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['data_source_id', 'date'],
+    properties: {
+      data_source_id: { type: 'string', format: 'uuid' },
+      date: { type: 'string', format: 'date' },
+      filters: { type: 'array', maxItems: 2, items: { type: 'object', required: ['property'], properties: { property: { type: 'string', minLength: 1 } }, additionalProperties: false } }
+    }
+  };
+  assert.deepEqual(Core.mcpArgumentValidationErrors(schema, {
+    data_source_id: '2424cb1c-6881-419f-86b9-cbe1d2aedd06',
+    date: '2026-08-13',
+    filters: [{ property: 'Done' }]
+  }), []);
+  const errors = Core.mcpArgumentValidationErrors(schema, {
+    data_source_id: 'not-a-data-source-id',
+    date: 'today',
+    database_id: 'wrong-kind',
+    filters: [{ property: '', value: true }]
+  });
+  assert.ok(errors.some((error) => error.includes('data_source_id must be a UUID')));
+  assert.ok(errors.some((error) => error.includes('date must use YYYY-MM-DD')));
+  assert.ok(errors.some((error) => error.includes('database_id is not supported')));
+  assert.ok(errors.some((error) => error.includes('filters[0].value is not supported')));
+});
+
+test('Notion turns include relative-date context and disciplined nested database guidance', () => {
+  const prompt = Core.profileSystemPrompt(profile(), true);
+  assert.match(prompt, /Current local date and time:/);
+  assert.match(prompt, /data-source or database-view query tool/);
+  assert.match(prompt, /Never invent page, database, data source/);
+  assert.match(prompt, /Never claim that clickable links are unavailable/);
+  assert.match(prompt, /link label must be exactly the page title/);
+  assert.doesNotMatch(Core.profileSystemPrompt(profile(), false), /Current local date and time:/);
+  const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
+  assert.match(source, /pendingToolRerouteFeedback = completionError/);
+  assert.doesNotMatch(source, /pendingReviewFeedback/);
 });
 
 test('ordinary assistant text is redirected into the language-independent completion protocol', () => {

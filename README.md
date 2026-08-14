@@ -6,6 +6,8 @@ BYON does not call, proxy, or emulate Notion's private AI backend. Notion AI rem
 
 ## Features
 
+- **Inline writing and page editing:** On accounts where Notion renders its native **Space to edit with AI** writer, BYON borrows that live surface after submission and prevents the native Notion AI request. Standalone writing stays inside the borrowed writer until **Insert below** or **Accept** fills the empty line where the writer opened. BYON submits complete formatted fragments through one native paste transaction so headings and multiple paragraphs enter Notion together. Replacement previews mirror Notion's captured review leaf: the original leaf is temporarily non-editable with a transparent caret, and token-level `.notion-enable-hover` spans show faded removals and blue additions. A lightweight frame monitor repairs the preview if Notion rerenders that leaf. Only genuinely new insertions use disabled native-block clones in the page flow. Targeted patches are applied through Notion's native editor only after **Accept**, and BYON verifies that Notion preserved them.
+
 - Compact connection management for multiple OpenAI-compatible provider profiles
 - Chat Completions and Responses API wire formats
 - Bearer, custom-header, and no-auth endpoints
@@ -18,7 +20,7 @@ BYON does not call, proxy, or emulate Notion's private AI backend. Notion AI rem
 - Optional visible-page excerpt, clearly marked as potentially incomplete
 - BYON-managed Notion MCP connection with OAuth/PKCE, inline tool activity, and configurable approvals
 - Backend-independent MCP tool translation for Chat Completions and Responses function calling
-- Light/dark theme support and a resizable panel
+- Light/dark theme support and a responsive 360–720 px resizable panel
 - Notion-style anchored chat, attachment, model, and API-mode popovers
 - Native-style full-page start and active-chat layouts that preserve Notion's workspace sidebar, with side/full switching
 - A dedicated right settings sidebar in full-page mode, keeping the chat visible while settings are open
@@ -73,7 +75,13 @@ This does not require `mcp_enabled`, an Unsloth preset, or an endpoint that impl
 
 Enabling the global Notion MCP connection makes workspace tools available to the active provider when a request needs them; it does not force tool use on every message. BYON first performs a structured semantic decision. General conversation, writing, coding, brainstorming, and arbitrary text go through the ordinary provider path without Notion instructions or tools.
 
-For local llama.cpp-compatible endpoints, BYON automatically simplifies full MCP JSON Schemas to the conservative subset accepted by tool-call grammar compilers and sends only the tools relevant to the current request. If the endpoint still reports a grammar-compilation error, BYON retries once using a minimal JSON-string argument envelope and unwraps it before calling MCP. Notion MCP still validates the actual arguments, so simplifying the model-facing schema does not bypass Notion's validation or BYON's configured approval policy.
+For local llama.cpp-compatible endpoints, BYON automatically simplifies full MCP JSON Schemas to the conservative subset accepted by tool-call grammar compilers and sends only the tools relevant to the current request. If the endpoint still reports a grammar-compilation error, BYON retries once using a minimal JSON-string argument envelope and unwraps it before calling MCP. Before sending a call to Notion, BYON validates the model's decoded arguments against the live MCP schema. Malformed JSON, missing required fields, unsupported fields, wrong types, and invalid constrained values are returned to the model as structured correction feedback instead of wasting a Notion request or aborting the whole turn.
+
+Notion tool turns include the user's current local date, time, and timezone so relative requests such as “today” are resolved consistently. Tool guidance favors targeted search followed by fetch, follows child references for nested content, and prefers data-source or database-view queries for database items when those tools are available. An unsubmitted answer draft is corrected inside the existing tool loop without re-running tool selection; a new routing turn is reserved for verifier feedback that may require a different tool set.
+
+When a Notion result supplies a useful direct page URL, BYON asks the model to cite it as a Markdown link and renders that link as a native-style Notion page mention with a page icon and external-link badge. Once an MCP answer is complete, its individual tool activities collapse into one `(x) steps` disclosure; expanding it reveals each tool's input and result.
+
+For the current Notion page, BYON enforces the page's exact title as the Markdown link label. If a model emits the current URL as plain text or labels it generically (for example, “click here”), BYON normalizes it to `[Exact page title](current URL)` before saving and rendering the response.
 
 If a model returns ordinary assistant text instead of the required structured completion, BYON redirects it back into the tool loop with function calling required. This is language-independent. BYON does not cap the number of productive Notion tool rounds: the loop continues until a verified answer, a user stop, or three consecutive identical no-progress attempts.
 
@@ -96,6 +104,8 @@ The advanced connection section accepts OAuth, bearer-token, or unauthenticated 
 The v1 target matrix is Chrome/Edge with Tampermonkey and Firefox with Violentmonkey or Greasemonkey. Streaming quality depends on whether the manager exposes progressive `GM_xmlhttpRequest` response text; BYON falls back to displaying the completed response.
 
 Notion's UI is not a public API. BYON locates the AI trigger by its semantic label and icon instead of generated CSS class names, and reapplies the replacement after Notion rerenders. A future Notion redesign can still require an update. The userscript menu commands remain available as a fallback.
+
+Inline page editing similarly depends on Notion rendering its native `.notion-agent-writer-ui` surface. If that surface is unavailable or cannot be tied safely to an empty paragraph, BYON leaves it alone. Inline edit context is limited to currently loaded paragraphs, headings, lists, to-dos, toggles, quotes, dividers, and code blocks. Databases, database views, callouts, embeds, media, and unknown block types are visible to the model only as unsupported records and cannot be patch targets. Inline requests are ephemeral, bypass Notion MCP, and are not added to chat history.
 
 Full-page BYON is strictly limited to Notion's `/ai` route. Choosing full-page mode from a regular Notion page navigates to `/ai` first, then opens BYON after Notion's AI workspace is available. Navigating away immediately hides and unmounts the full-page surface, so it never continues behind an ordinary page.
 
