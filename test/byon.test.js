@@ -105,19 +105,20 @@ test('inline page-edit proposals use strict targeted block patches without MCP o
   assert.match(source, /commitInlineDraftBelow/);
   assert.match(source, /proposal\.mode === 'draft'/);
   assert.doesNotMatch(source, /text\.slice\(index, index \+ 64\)/);
-  assert.match(source, /target\.cloneNode\(true\)/);
-  assert.match(source, /target\.parentNode\.insertBefore\(preview/);
-  assert.match(source, /dataset\.byonInlinePreview/);
-  assert.match(source, /leaf\.innerHTML = inlinePreviewDiffHtml/);
+  assert.match(source, /inlinePatchReviewHtml/);
+  assert.match(source, /byon-inline-patch-review/);
   assert.match(source, /class=\"notion-enable-hover\"/);
   assert.match(source, /data-token-index/);
-  assert.match(source, /inlinePreviewDecorations/);
-  assert.match(source, /monitorInlinePreviewIntegrity/);
-  assert.match(source, /requestAnimationFrame\(check\)/);
-  assert.match(source, /inlinePreviewNodes\.length \+ inlinePreviewDecorations\.length !== session\.proposal\.changes\.length/);
+  assert.doesNotMatch(source, /inlinePreviewDecorations/);
+  assert.doesNotMatch(source, /monitorInlinePreviewIntegrity/);
   assert.doesNotMatch(source, /byon-inline-preview-root/);
-  assert.match(source, /steps\.every\(\(step\) => step\.kind === 'paragraph'\)/);
-  assert.match(source, /continueInNewNotionParagraph/);
+  assert.match(source, /await pasteMarkdownChunkIntoNotion\(session, markdown\)/);
+  assert.match(source, /markdownTextSegments\(markdown\)\.join\(' '\)/);
+  assert.match(source, /const beforeUndo = inlinePageFingerprint\(\)/);
+  assert.match(source, /pasteMarkdownChunkIntoNotion/);
+  assert.match(source, /clipboardData\.setData\('text\/plain'/);
+  assert.match(source, /inlinePageTextSegments/);
+  assert.doesNotMatch(source, /if \(index\) await continueInNewNotionParagraph\(session\);\s*if \(chunks\[index\]\) await pasteMarkdownChunkIntoNotion/);
   assert.match(source, /settleNotionSelection/);
   assert.match(source, /pasteMarkdownIntoNotion/);
   assert.match(source, /new ClipboardEvent\('paste'/);
@@ -126,11 +127,17 @@ test('inline page-edit proposals use strict targeted block patches without MCP o
   assert.match(source, /leaf\?\.innerText \|\| leaf\?\.textContent/);
   assert.doesNotMatch(source, /style\.setProperty\('translate'/);
   assert.match(source, /data-content-editable-root="true"/);
+  assert.match(source, /byon-inline-native-row\.finished \.byon-inline-body\{flex-direction:column/);
+  assert.match(source, /byon-inline-native-row\.finished \.byon-inline-actions\{width:100%/);
   assert.match(source, /Inline requests are ephemeral|inline sessions remain ephemeral|generateInlineEditProposal/);
   assert.doesNotMatch(source, /performMcpCompletion\([^)]*inline/i);
 });
 
 test('inline block serialization and Markdown commit planning cover supported Notion blocks', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
+  assert.match(source, /activeBlockId/);
+  assert.match(source, /Notion only preserved part of the current pasted block/);
+  assert.doesNotMatch(source, /inlinePagePlainText\(\) !== beforeText/);
   assert.equal(Core.notionBlockTypeFromClassName('notion-selectable notion-header-block'), 'heading_1');
   assert.equal(Core.notionBlockTypeFromClassName('notion-selectable notion-numbered_list-block'), 'numbered_list');
   assert.equal(Core.notionBlockTypeFromClassName('notion-selectable notion-collection_view-block'), '');
@@ -142,6 +149,11 @@ test('inline block serialization and Markdown commit planning cover supported No
     { prefix: '-', text: 'item', kind: 'markdown' },
     { prefix: '', text: 'Paragraph', kind: 'paragraph' }
   ]);
+  assert.deepEqual(Core.markdownCommitChunks('## Heading\n\n- one\n- two\n\n```js\nconst x = 1;\n```\n\n| A | B |\n| --- | --- |\n| 1 | 2 |'), [
+    '## Heading', '', '- one\n- two', '', '```js\nconst x = 1;\n```', '', '| A | B |\n| --- | --- |\n| 1 | 2 |'
+  ]);
+  assert.equal(Core.orderedTextSegmentsMatch(['Heading', 'First item', 'Second item'], ['Heading', 'First item', 'Second item']), true);
+  assert.equal(Core.orderedTextSegmentsMatch(['Heading First item Second item'], ['Heading', 'First item', 'Second item']), false);
   assert.equal(Core.plainTextFromMarkdown('## Heading\n- [ ] **Task**\n[Page](https://example.test)'), 'Heading\nTask\nPage');
 });
 
@@ -357,12 +369,13 @@ test('provider bodies include text-file attachments on their user message', () =
 test('Responses body uses translated function tools without provider-managed MCP state', () => {
   const p = profile({ apiType: 'responses' });
   const definitions = Core.mcpFunctionDefinitions([{ name: 'notion-create-pages', description: 'Create pages', inputSchema: { type: 'object' } }], 'responses');
-  const body = Core.buildResponsesBody(p, [{ role: 'user', content: 'Create a page.' }], { title: 'Home', url: 'https://www.notion.so/home' }, { stream: false, tools: definitions.map((tool) => tool.modelTool), includeMcpInstruction: true });
+  const body = Core.buildResponsesBody(p, [{ role: 'user', content: 'Create a page.' }], { title: 'Home', url: 'https://www.notion.so/home' }, { stream: false, tools: definitions.map((tool) => tool.modelTool), includeMcpInstruction: true, mcpServerContext: 'Live MCP server instructions.' });
   assert.equal(body.tools[0].type, 'function');
   assert.equal(body.tools[0].name, 'notion-create-pages');
   assert.equal(body.stream, false);
   assert.equal(body.store, false);
   assert.match(body.instructions, /Never claim/);
+  assert.match(body.instructions, /Live MCP server instructions/);
 });
 
 test('MCP schemas are normalized to the conservative llama.cpp subset', () => {
@@ -387,6 +400,12 @@ test('MCP schemas are normalized to the conservative llama.cpp subset', () => {
   assert.equal(normalized.additionalProperties, false);
   assert.equal(normalized.$defs, undefined);
   assert.equal(normalized.properties.forbidden.not, undefined);
+
+  const [nativeDefinition] = Core.mcpFunctionDefinitions([{ name: 'union-tool', inputSchema: source }], 'chat_completions');
+  assert.deepEqual(nativeDefinition.modelTool.function.parameters, source);
+  const [compatibleDefinition] = Core.mcpFunctionDefinitions([{ name: 'union-tool', inputSchema: source }], 'chat_completions', { schemaMode: 'normalized' });
+  assert.deepEqual(compatibleDefinition.modelTool.function.parameters, normalized);
+  assert.match(compatibleDefinition.modelTool.function.description, /Original live MCP schema/);
 });
 
 test('MCP tool routing accepts exact model-selected names and has a conservative fallback', () => {
@@ -397,6 +416,7 @@ test('MCP tool routing accepts exact model-selected names and has a conservative
   const selected = Core.selectMcpToolsByName(tools, ['notion-search', 'notion-fetch', 'notion-create-pages'], 5).map((tool) => tool.name);
   assert.deepEqual(selected, ['notion-search', 'notion-fetch', 'notion-create-pages']);
   assert.deepEqual(Core.fallbackMcpTools(tools, 3).map((tool) => tool.name), ['notion-search', 'notion-fetch', 'notion-create-pages']);
+  assert.deepEqual(Core.selectMcpToolsByName(tools.slice(0, 4), ['notion-fetch'], 5).map((tool) => tool.name), ['notion-fetch']);
   assert.equal(Core.toolRouterFunctionDefinition('chat_completions').function.name, 'byon_select_tools');
   assert.equal(Core.toolRouterFunctionDefinition('responses').name, 'byon_select_tools');
   assert.deepEqual(Core.toolRouterFunctionDefinition('chat_completions').function.parameters.required, ['use_notion', 'tool_names']);
@@ -417,6 +437,8 @@ test('MCP tool grammar fallback uses a universal string envelope and unwraps it'
   assert.deepEqual(Core.argumentsForMcpTool(definition, JSON.stringify({ arguments_json: '{"page_id":"abc"}' })), { page_id: 'abc' });
   assert.equal(Core.isToolGrammarCompilationError(new Error("The model couldn't compile a tool-calling grammar for this request.")), true);
   assert.equal(Core.isToolGrammarCompilationError(new Error('HTTP 401: Unauthorized')), false);
+  assert.equal(Core.isToolSchemaCompatibilityError(new Error('HTTP 400: oneOf is not supported in function parameters')), true);
+  assert.equal(Core.isToolSchemaCompatibilityError(new Error('HTTP 401: Unauthorized')), false);
 });
 
 test('MCP arguments are validated locally against the live schema before execution', () => {
@@ -447,6 +469,52 @@ test('MCP arguments are validated locally against the live schema before executi
   assert.ok(errors.some((error) => error.includes('filters[0].value is not supported')));
 });
 
+test('Notion update commands retain command-specific requirements and safe recovery guidance', () => {
+  const tool = {
+    name: 'notion-update-page',
+    description: 'Update a page.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        page_id: { type: 'string' }, command: { type: 'string' },
+        new_str: { type: 'string' }, content: { type: 'string' }, content_updates: { type: 'array' }
+      },
+      required: ['page_id', 'command']
+    }
+  };
+  const [definition] = Core.mcpFunctionDefinitions([tool], 'chat_completions');
+  assert.match(definition.modelTool.function.description, /replace_content requires page_id.*new_str/);
+  assert.match(definition.modelTool.function.description, /Never set allow_deleting_content/);
+  assert.deepEqual(Core.notionMcpCommandValidationErrors('notion-update-page', { page_id: 'page', command: 'replace_content' }), [
+    'arguments.new_str is required when command is replace_content'
+  ]);
+  assert.deepEqual(Core.notionMcpCommandValidationErrors('notion-update-page', { page_id: 'page', command: 'insert_content' }), [
+    'arguments.content is required when command is insert_content'
+  ]);
+  assert.deepEqual(Core.notionMcpCommandValidationErrors('notion-update-page', {
+    page_id: 'page', command: 'update_content', content_updates: [{ old_str: 'before', new_str: 'after' }]
+  }), []);
+
+  const errorResult = JSON.stringify({
+    content: [{ type: 'text', text: JSON.stringify({
+      body: JSON.stringify({ message: 'This operation would delete 30 child page(s) or database(s).', request_id: 'request-a' }),
+      request_id: 'request-a'
+    }) }],
+    isError: true
+  });
+  const corrected = JSON.parse(Core.mcpErrorCorrectionGuidance('notion-update-page', { command: 'replace_content' }, errorResult));
+  assert.equal(corrected._byon_correction.retry_required, true);
+  assert.match(corrected._byon_correction.guidance.join(' '), /use update_content/);
+  assert.match(corrected._byon_correction.guidance.join(' '), /Do not repeat replace_content/);
+
+  const missingArgument = JSON.stringify({
+    content: [{ type: 'text', text: JSON.stringify({ body: JSON.stringify({ message: 'The "replace_content" command requires a "new_str" parameter.' }) }) }],
+    isError: true
+  });
+  const correctedMissingArgument = JSON.parse(Core.mcpErrorCorrectionGuidance('notion-update-page', { command: 'replace_content' }, missingArgument));
+  assert.match(correctedMissingArgument._byon_correction.guidance.join(' '), /top-level new_str/);
+});
+
 test('Notion turns include relative-date context and disciplined nested database guidance', () => {
   const prompt = Core.profileSystemPrompt(profile(), true);
   assert.match(prompt, /Current local date and time:/);
@@ -457,6 +525,11 @@ test('Notion turns include relative-date context and disciplined nested database
   assert.doesNotMatch(Core.profileSystemPrompt(profile(), false), /Current local date and time:/);
   const source = fs.readFileSync(path.join(__dirname, '..', 'byon.user.js'), 'utf8');
   assert.match(source, /pendingToolRerouteFeedback = completionError/);
+  assert.match(source, /serverInstructions: String\(initialized\.result\?\.instructions/);
+  assert.match(source, /notion:\/\/docs\/enhanced-markdown-spec/);
+  assert.match(source, /schemaMode = 'native'/);
+  assert.match(source, /schemaMode === 'native' \? 'normalized' : 'json_envelope'/);
+  assert.match(source, /session\.protocolVersion/);
   assert.doesNotMatch(source, /pendingReviewFeedback/);
 });
 
@@ -481,6 +554,12 @@ test('MCP work has no total round cap and stops only repeated identical no-progr
   assert.doesNotThrow(() => Core.throwIfToolCallMadeNoProgress(stuck, 'notion-fetch', { id: 'a' }, '{"page":"A"}'));
   assert.doesNotThrow(() => Core.throwIfToolCallMadeNoProgress(stuck, 'notion-fetch', { id: 'a' }, '{"page":"A"}'));
   assert.throws(() => Core.throwIfToolCallMadeNoProgress(stuck, 'notion-fetch', { id: 'a' }, '{"page":"A"}'), /identical arguments and an identical result 3 times/);
+
+  const volatile = { signature: '', count: 0 };
+  const failed = (requestId) => JSON.stringify({ isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'validation_error', request_id: requestId }) }] });
+  assert.doesNotThrow(() => Core.throwIfToolCallMadeNoProgress(volatile, 'notion-update-page', { command: 'replace_content' }, failed('one')));
+  assert.doesNotThrow(() => Core.throwIfToolCallMadeNoProgress(volatile, 'notion-update-page', { command: 'replace_content' }, failed('two')));
+  assert.throws(() => Core.throwIfToolCallMadeNoProgress(volatile, 'notion-update-page', { command: 'replace_content' }, failed('three')), /identical arguments and an identical result 3 times/);
 });
 
 test('provider bodies can require a function call for a corrective continuation', () => {
@@ -618,8 +697,15 @@ test('buffered provider responses are extracted', () => {
 });
 
 test('Markdown renderer escapes raw HTML and rejects unsafe links', () => {
-  const html = Core.renderMarkdown('# Title\n<script>alert(1)</script>\n[bad](javascript:alert(1))\n[good](https://example.com?a=1&b=2)\n```js\nconst x = "<tag>";\n```');
+  const html = Core.renderMarkdown('# Title\n#### Detail\n> Quote\n- [x] Done\n~~Removed~~\n---\n| Name | Value |\n| --- | --- |\n| One | Two |\n![Alt](https://example.com/image.png)\n<script>alert(1)</script>\n[bad](javascript:alert(1))\n[good](https://example.com?a=1&b=2)\n```js\nconst x = "<tag>";\n```');
   assert.match(html, /<h1>Title<\/h1>/);
+  assert.match(html, /<h4>Detail<\/h4>/);
+  assert.match(html, /<blockquote>Quote<\/blockquote>/);
+  assert.match(html, /class="markdown-task"/);
+  assert.match(html, /<del>Removed<\/del>/);
+  assert.match(html, /<hr>/);
+  assert.match(html, /<table>/);
+  assert.match(html, /<img src="https:\/\/example\.com\/image\.png" alt="Alt">/);
   assert.doesNotMatch(html, /<script>/);
   assert.match(html, /&lt;script&gt;/);
   assert.match(html, /href="#"/);

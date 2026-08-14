@@ -1,6 +1,6 @@
 {
   "name": "byon-userscript",
-  "version": "0.5.24",
+  "version": "0.5.31",
   "private": true,
   "description": "Bring your own OpenAI-compatible backend to a native-styled Notion chat panel.",
   "scripts": {
